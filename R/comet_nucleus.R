@@ -33,18 +33,25 @@
 #' 3.31.23 Moved 05_clean_redcap to beginning of order and added 16_data_export. JC \cr
 
 ##### Load Packages #####
-if(all(grepl("markdown",(.packages()))==FALSE)){require(tidyverse)}
-if(all(grepl("markdown",(.packages()))==FALSE)){require(rlang)}
-if(all(grepl("markdown",(.packages()))==FALSE)){require(R.utils)}
-if(all(grepl("markdown",(.packages()))==FALSE)){require(gtools)}
-if(all(grepl("markdown",(.packages()))==FALSE)){require(rio)}
-if(all(grepl("markdown",(.packages()))==FALSE)){require(htmlTable)}
-if(all(grepl("markdown",(.packages()))==FALSE)){require(httr)}
-if(all(grepl("markdown",(.packages()))==FALSE)){require(lubridate)}
+if(all(grepl("tidyverse",(.packages()))==FALSE)){require(tidyverse)}
+if(all(grepl("rlang",(.packages()))==FALSE)){require(rlang)}
+if(all(grepl("R.utils",(.packages()))==FALSE)){require(R.utils)}
+if(all(grepl("gtools",(.packages()))==FALSE)){require(gtools)}
+if(all(grepl("rio",(.packages()))==FALSE)){require(rio)}
+if(all(grepl("htmlTable",(.packages()))==FALSE)){require(htmlTable)}
+if(all(grepl("httr",(.packages()))==FALSE)){require(httr)}
+if(all(grepl("lubridate",(.packages()))==FALSE)){require(lubridate)}
 if(all(grepl("markdown",(.packages()))==FALSE)){require(markdown)}
 if(all(grepl("knitr",(.packages()))==FALSE)){require(knitr)}
 if(all(grepl("jsonlite",(.packages()))==FALSE)){require(jsonlite)}
 if(all(grepl("png",(.packages()))==FALSE)){require(png)}
+if(all(grepl("htmlTable",(.packages()))==FALSE)){require(htmlTable)}
+if(all(grepl("flextable",(.packages()))==FALSE)){require(flextable)}
+if(all(grepl("DT",(.packages()))==FALSE)){require(DT)}
+if(all(grepl("gt",(.packages()))==FALSE)){require(gt)}
+if(all(grepl("gtsummary",(.packages()))==FALSE)){require(gtsummary)}
+if(all(grepl("ggpmisc",(.packages()))==FALSE)){require(ggpmisc)}
+if(all(grepl("encryptr",(.packages()))==FALSE)){require(encryptr)}
 
 #message("Required libraries loaded.")
 print(Sys.info())
@@ -161,12 +168,13 @@ finally = {})
 if(messages_flag ==1){message(paste("Launching Everyday Scripts.\n"))}
 ###### Launch Everyday Scripts #####
 
-#Commented out texting on 10.14.22 so that texts aren't sent at 6:30 AM
   script_order <- c('00_bootstrap_error.R',
+                    '00_encrypt_fitbit.R',
                     '05_clean_redcap.R',
                     '06_read_clean_merge.R',
                     '00_fitbit_functions.R',
                     '00_product_script_functions.R',
+                    '02_refresh_token.R',
                     '03_get_steps.R',
                     '06_read_clean_merge.R',
                     '04_get_hr_and_activities.R',
@@ -178,14 +186,14 @@ if(messages_flag ==1){message(paste("Launching Everyday Scripts.\n"))}
                     '06_read_clean_merge.R',
                     '06_exercise_data_consolidation.R',
                     '06_exercise_adherence.R',
-                    #'08_texting_system.R',  
+                    '08_texting_system.R',  
                     '10_croms_report.R',
                     '12_med_monitor_report.R',
                     '11_coordinator_email.R',
                     '13_ymca_liason_email.R',
                     '15_data_quality_email.R',
-                    '16_data_export_for_scientists.R'
-                    #'14_participant_reports.R'
+                    '16_data_export_for_scientists.R',
+                    '14_participant_reports.R'
                     
                      )
   
@@ -194,6 +202,7 @@ if(messages_flag ==1){message(paste("Launching Everyday Scripts.\n"))}
   for(i in 1:length(script_order)){
     if (execution == 1) {
       tryCatch({
+          last_up <<- script_order[i-1]
           next_up <<- script_order[i]
           if(messages_flag == 1){message(paste("\nChild Script",i,"of",length(script_order),": Sourcing",next_up))}
           source(list.files(file.path(script_dir), next_up, full.names=TRUE)) 
@@ -219,6 +228,7 @@ if(messages_flag ==1){message(paste("Launching Everyday Scripts.\n"))}
     for(i in 1:length(script_order)){
       if(execution == 1){
         tryCatch({
+          last_up <<- script_order[i-1]
           next_up <<- script_order[i]
           if(messages_flag == 1){message(paste("\nEmail Script",i,"of",length(script_order),": Sourcing",next_up))}
 	        source(list.files(file.path(script_dir), next_up, full.names=TRUE)) 
@@ -232,14 +242,16 @@ if(messages_flag ==1){message(paste("Launching Everyday Scripts.\n"))}
     } #end for
   } #end if weekday
 
-#### Run Daily if on JC's machine ####
-#On 10/14/22, this was done to prevent the texts from sending so early. Working on changing cron job to be later
-if(hour(now()) >= 8 & execution == 1) {
-  source(file.path(script_dir,'08_texting_system.R'))
-  source(file.path(script_dir,'14_participant_reports.R'))
+##### Successful Run - Encrypt ####
+if(execution == 1) {
+  successful_execution <- 1
+  source(file.path(script_dir, '00_encrypt_fitbit.R'))
+  
+  #clear workspace if running on server
+  if(Sys.info()["nodename"]!="workstation_1"){
+    rm(list = ls())
+  }
 }
 
-#clear workspace if running on server
-if(Sys.info()["nodename"]!="workstation_1"){
-  rm(list = ls())
-}
+
+

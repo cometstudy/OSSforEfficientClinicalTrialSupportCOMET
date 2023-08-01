@@ -55,12 +55,11 @@ email_update <- ''#'<p style="font-family:arial;" ="font-size:125%;"><b>Update:<
 load(file.path(data_dir,'clean','comet_clean.Rdata'))
 load(file.path(data_dir,'clean','ex_min_clean.Rdata'))
 
+#### App info
+client_info <- import(file.path(project_dir,'data','read_write','read_write','client_info.csv')) 
 
-##### App info ####
-client_info <- import(file.path(project_dir,'data','read_write','read_write','client_info.csv'))
-
-#### User info ####
-fitbit_users <- import(file.path(project_dir,'data','read_write','read_write','fitbit_users.csv'))
+### User info
+fitbit_users <- read.csv(file.path(data_dir,'read_write','read_write','fitbit_users.csv'), na.strings = c("", " "))
 
 ######### Check to see if tokens need to be refreshed #####
 state <- get_status(usercode = fitbit_users$user[1], token = fitbit_users$access_token[1])

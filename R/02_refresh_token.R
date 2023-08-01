@@ -21,12 +21,11 @@ message("Beginning 02 refresh token")
 
 
 
-##### App info ####
+#### App info
 client_info <- import(file.path(project_dir,'data','read_write','read_write','client_info.csv')) 
 
-#### User info ####
-fitbit_users <- import(file.path(project_dir,'data','read_write','read_write','fitbit_users.csv')) %>%
-  filter(user != "")
+### User info
+fitbit_users <- read.csv(file.path(data_dir,'read_write','read_write','fitbit_users.csv'), na.strings = c("", " "))
 
 
 ############# Refresh Tokens #####
@@ -70,3 +69,7 @@ for(i in 1:nrow(fitbit_users))
 }
 ### Write new access and refresh tokens to log
 export(fitbit_users, file.path(project_dir,'data','read_write','read_write','fitbit_users.csv'))
+encrypt_file(file.path(project_dir,'data','read_write','read_write','fitbit_users.csv'))
+
+export(file.path(project_dir,'data','read_write','read_write','client_info.csv'))
+encrypt_file(file.path(project_dir,'data','read_write','read_write','client_info.csv'))

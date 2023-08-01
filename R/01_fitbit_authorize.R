@@ -82,8 +82,11 @@ if(nrow(unauthorized_users>0)) {
   fitbit_users <- full_join(temp, temp_2)
 
   export(fitbit_users, file.path(data_dir,'read_write','read_write','fitbit_users.csv'))
-
+  encrypt_file(file.path(project_dir,'data','read_write','read_write','fitbit_users.csv'))
+  
 }  
 
-
+##ncrypt client_info
+export(file.path(project_dir,'data','read_write','read_write','client_info.csv'))
+encrypt_file(file.path(project_dir,'data','read_write','read_write','client_info.csv'))
 
