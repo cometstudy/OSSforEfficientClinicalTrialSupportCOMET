@@ -1,0 +1,947 @@
+---
+title: "Differential Effects of Exercise Modality on Cognition and Brain in Older Adults (COMET) - Closed Session"
+author: "Eric Vidoni, PT, Ph.D. and Amanda N Szabo-Reed, Ph.D."
+output:
+  word_document:
+    toc: TRUE
+    reference_docx: style_template.docx
+
+
+---
+
+```{r setup, include=FALSE}
+##### Declare Libraries #####
+library(rio)
+library(httr)
+library(lubridate)
+library(tidyverse)
+library(htmlTable)
+library(R.utils)
+library(gtools)
+library(flextable)
+library(gtsummary)
+library(consort)
+
+
+  ##### Build Directories #####
+  if(Sys.info()["nodename"]=="workstation_2" & Sys.info()["user"]=="user2"){  #This is Eric's work desktop Mac
+    root_p <- file.path("","drives","university_drive2")
+    root_server_dir <- file.path(root_p,"study_dir_a")
+    python_cmd_prefix <- "python "
+  } else if(Sys.info()["nodename"]=="workstation_1" & Sys.info()["user"]=="study_coordinator_2") {
+    root_p <- file.path("drive")
+    root_server_dir <- file.path(root_p,"study_dir_a")
+    python_cmd_prefix <- "py "
+  } else if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+    root_p <- ""
+    root_server_dir <- file.path(root_p,"ADC_Data")
+    python_cmd_prefix <- "python "
+  } else if(Sys.info()["nodename"]=="workstation_4" & Sys.info()["user"]=="user2"){  #This is eric's personal laptop
+    root_p <- file.path("Z:")
+    root_server_dir <- file.path(root_p,"study_dir_a")
+    python_cmd_prefix <- "py "
+  }
+  
+  message(paste0("Node is ",Sys.info()["nodename"],". Using ", root_server_dir, ' as the root of the directory structure.'))
+  
+  if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+    external_data_dir <- file.path('','kumc-data01','protected','study_dir_a','RAWDATA') 
+  } else {
+    external_data_dir <- file.path(root_p,'study_dir_a','RAWDATA')
+  }
+  project_dir <- file.path(root_server_dir,'study_dir_a','COMET') #project level directory
+  script_dir <- file.path(project_dir,'R')
+  data_dir <- file.path(project_dir,'data')
+  
+  
+  #Identify the ultimate location for copies of the files we can use to read data
+  cog_destination <- file.path(data_dir,'raw','cog_data')
+  dxa_destination <- file.path(data_dir,'raw','dxa_data')
+  clean_data_destination <- file.path(data_dir,'clean')
+  
+  ###### Load Data #####
+  load(file.path(data_dir,'clean','comet_clean.Rdata'))
+  load(file.path(data_dir,'clean','ex_min_clean.Rdata'))
+  load(file.path(data_dir,'clean','adherence.Rdata'))
+  
+  ##### Load Saved Data - comment out when not using ####
+  load(file.path(data_dir,'clean','saved_data_points','20230208','comet_clean.Rdata'))
+  load(file.path(data_dir,'clean','saved_data_points','20230208','ex_min_clean.Rdata'))
+  load(file.path(data_dir,'clean','saved_data_points','20230208','adherence.Rdata'))
+  
+  ###.Rdata Info####
+  data_date <- file.info(file.path(data_dir,'clean','saved_data_points','20230208','comet_clean.Rdata')) %>%
+    select(mtime) %>%
+    mutate(mtime = format(mtime - days(1), '%b. %d, %Y')) %>%
+    pull()
+    
+  ##### Randomize Groups #####
+  random_groups <- data.frame(random_group_letter = c('A','B','C','D')) %>%
+    mutate(random_group_number = sample(nrow(.), size = nrow(.), replace = F)+1) 
+ 
+  #Keeping in case need for meteor again
+  #Comet pts in meteor. Put here in case need to use for later
+  # meteor_group <- comet %>%
+  #   select(comet_study_id, group) %>%
+  #   filter(!is.na(comet_study_id)) %>%
+  #   left_join(., random_groups, by = c("group" = "random_group_number"))
+  # 
+  # meteor_pts <- import(file.path(project_dir,'meteor_groups.xlsx')) %>%
+  #   select(-random_group_letter) %>%
+  #   mutate(comet_study_id = as.numeric(comet_study_id)) %>%
+  #   left_join(., meteor_group, by = "comet_study_id") %>%
+  #   select(-group) %>%
+  #   export(., file = file.path(project_dir,"random_groups_meteor.xlsx"))
+  
+  
+  ##### COMET database (test entry removed) ######
+  comet_scienctist_markdown <- comet %>%
+    filter(record_id != 0) %>%
+    filter(redcap_event_name == "baseline_arm_1") %>%
+    mutate(Status = case_when(intervention_status == 1 ~ "Actively on intervention",
+                              intervention_status == 2 ~ "Successfully completed",
+                              intervention_status == 3 ~ "Withdrawn willing to complete testing",
+                              intervention_status == 4 ~ "Withdrawn unwilling to complete testing",
+                              intervention_status == 5 ~ "Lost to Follow-up",
+                              intervention_status == 6 ~ "Terminated Early")) %>%
+    mutate(race_ethnicity = case_when(ethnicity == "Hispanic or Latino" & (race == "White" | race == "None of these fully describe me") ~ "Hispanic or Latino", 
+                                      T ~ race )) %>%
+    left_join(., random_groups, by = c("group" = "random_group_number")) %>%
+    mutate(Group = random_group_letter)
+    
+  
+  
+  ###### import ctcae categories and terms #######
+  ctcae_categories <- import(file.path(data_dir,'dsmc_report','CTCAE_v5.0_categories.xlsx'))
+  ctcae_terms <- import(file.path(data_dir,'dsmc_report','CTCAE_v5.0_terms.xlsx'))
+  
+  #### Adverse Event and EOI Databases
+  adverse_event_dsmc <- adverse_event %>%
+    filter(ae_eoi == 0) %>%
+    mutate(Related = case_when(ae_is_study_related == 0 ~ "Not Related",
+                               ae_is_study_related == 2 ~ "Possibly Related",
+                               ae_is_study_related == 1 ~ "Definitely Related")) %>%
+    left_join(., ctcae_categories, by = c("ae_ctcae_category" = "ctcae_identifier")) %>%
+    left_join(., ctcae_terms, by = c("ae_ctcae_term" = "ctcae_term_identifier")) %>%
+    mutate("SOC and Preferred Term" = case_when(!grepl("Other", ctcae_term) ~ paste(ctcae_category,"-",ctcae_term),
+                                                        TRUE ~ ctcae_term)) %>%
+    mutate(Outcome = case_when(ae_outcome == 1 ~ "Recovered, without treatment",
+                               ae_outcome == 2 ~ "Recovered, with treatment",
+                               ae_outcome == 3 ~ "Still Present, no treatment",
+                               ae_outcome == 4 ~ "Still Present, being treated",
+                               ae_outcome == 5 ~ "Residual effect(s) present - no treatment",
+                               ae_outcome == 6 ~ "Residual effect(s) present- being treated",
+                               ae_outcome == 7 ~ "Subject died")) %>%
+    mutate(Serious = case_when(ae_was_ae_serious == 0 ~ "No",
+                               ae_was_ae_serious == 1 ~ "Yes")) %>%
+    mutate(Severity = case_when(ae_grade == 1 ~ "Grade 1; Mild",
+                                ae_grade == 2 ~ "Grade 2; Moderate",
+                                ae_grade == 3 ~ "Grade 3; Severe",
+                                ae_grade == 4 ~ "Grade 4; Life Threatening",
+                                ae_grade == 5 ~ "Grade 5; Death related to AE"))
+
+  
+  eoi_dsmc <- adverse_event %>%
+    filter(ae_eoi == 1) %>%
+    mutate(Related = case_when(ae_is_study_related == 0 ~ "Not Related",
+                               ae_is_study_related == 2 ~ "Possibly Related",
+                               ae_is_study_related == 1 ~ "Definitely Related")) %>%
+    left_join(., ctcae_categories, by = c("ae_ctcae_category" = "ctcae_identifier")) %>%
+    left_join(., ctcae_terms, by = c("ae_ctcae_term" = "ctcae_term_identifier")) %>%
+    mutate("SOC and Preferred Term" = case_when(!grepl("Other", ctcae_term) ~ paste(ctcae_category,"-",ctcae_term),
+                                                        TRUE ~ ctcae_term)) %>%
+    mutate(Outcome = case_when(ae_outcome == 1 ~ "Recovered, without treatment",
+                               ae_outcome == 2 ~ "Recovered, with treatment",
+                               ae_outcome == 3 ~ "Still Present, no treatment",
+                               ae_outcome == 4 ~ "Still Present, being treated",
+                               ae_outcome == 5 ~ "Residual effect(s) present - no treatment",
+                               ae_outcome == 6 ~ "Residual effect(s) present- being treated",
+                               ae_outcome == 7 ~ "Subject died")) %>%
+    mutate(Serious = case_when(ae_was_ae_serious == 0 ~ "No",
+                               ae_was_ae_serious == 1 ~ "Yes")) %>%
+    mutate(Severity = case_when(ae_grade == 1 ~ "Grade 1; Mild",
+                                ae_grade == 2 ~ "Grade 2; Moderate",
+                                ae_grade == 3 ~ "Grade 3; Severe",
+                                ae_grade == 4 ~ "Grade 4; Life Threatening",
+                                ae_grade == 5 ~ "Grade 5; Death related to AE")) 
+  #### Groups #### 
+  groups_to_join <- comet_scienctist_markdown %>%
+    select(record_id, comet_study_id, Status, Group, random_group_letter) 
+
+  
+  ###### Load Personal Trainer Database #######
+  trainer_db <- import(file.path(data_dir,'ymca_liason_email','PHITPersonalTrainers.csv'))
+
+  trainer_db_date <- file.info(file.path(data_dir,'ymca_liason_email','PHITPersonalTrainers.csv')) %>%
+    mutate(date = format(mtime, format = "%m/%d/%y")) %>%
+    pull(date)
+  
+  ###### Load Personal Trainer List #####
+  trainer_list <- import(file.path(data_dir,'ymca_liason_email','PHITPersonalTrainers.csv')) %>%
+    filter(is.na(redcap_repeat_instance)) %>%
+    select(record_id, first_name, last_name, work_email, trainer_status, organization, location_y)
+  
+
+  
+  ##### import recruitment projections ####
+  recruitment_projection <- import(file.path(data_dir,'scientist_email','recruitment_projection.xlsx')) %>%
+    mutate(week = week(ymd(Date)), year = year(ymd(Date)))
+  
+  #### Import Data Dictionary #####
+  data_dictionary <- import(file.path(data_dir,'data_dictionary','COMETDifferentialEffectsOfExer_DataDictionary.csv'))
+  
+  ##### Source consort diagram to use throughout document ####
+  source(file.path(data_dir,'dsmc_report','dsmc_consort_generator_closed.R'))
+  
+  ###### Date as of Report ####
+  date_as_of <- data_date
+  
+  ###### Last Report ######
+  date_of_last_report <- ymd('2022-07-26')
+  
+  
+
+  
+```
+
+\newpage
+
+# Closed Session Report Summary
+
+Neal will write this section. 
+
+
+\newpage
+
+# Recruitment and Participant Status: Figure and Tables  
+
+
+\newpage
+
+## Figure 1a: Screening Consort Diagram
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+Recruitment start date: Sept 09, 2021
+
+```{r consorta, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+
+knitr::include_graphics(file.path(data_dir,'dsmc_report','closed_consort_screen.png'), dpi = 6.92) 
+
+```
+
+\newpage
+
+## Figure 1b: Enrollment Consort Diagram
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+Recruitment start date: Sept 09, 2021
+
+```{r consortb, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+
+knitr::include_graphics(file.path(data_dir,'dsmc_report','closed_consort_enrolled.png'), dpi = 6.92) 
+
+```
+
+\newpage
+
+
+##  Table 3: Demographic and Key Baseline Characteristics 
+
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_4, echo=FALSE, warning=FALSE, message=FALSE}
+
+#Source  https://www.ers.usda.gov/data-products/rural-urban-commuting-area-codes/
+#Updated on 8/18/22 with a list from EDV
+rural_zips <- import(file.path(data_dir,'dsmc_report','forhp-eligible-zips.xlsx')) %>%
+  pull(ZIP_CODE)
+
+enrolled_df <- randomized 
+
+test <- enrolled_df  %>%
+  mutate(Rural = case_when(scrn_address_zip %in% rural_zips ~ "Rural",
+                           T ~ "Not Rural")) %>%
+  select(race, ethnicity, gender, Rural, age, Group) %>%
+  rename(Race = race, Ethnicity = ethnicity, Gender = gender, Age = age)
+
+gtsummary::tbl_summary(test,
+                       by = Group,
+                       statistic = all_continuous() ~ "{mean}, ({sd})",
+                       type = list(Age ~ "continuous")) %>%
+  add_p(list(all_continuous() ~ "aov",
+             all_categorical() ~ "fisher.test")) %>%
+  as_flex_table() %>%
+  add_footer_lines("p-values were calculated using Fisher’s exact test for categorical variables (Race, Ethnicity, Gender and Rural) and a one-way ANOVA for continuous variables. ") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+
+
+
+
+```
+
+\newpage
+
+
+##  Figure 3: Intervention Adherence 
+
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+Adherence data are captured in real-time using self-reported exercise logs and Fitbit devices. Percent adherence is estimated by dividing the sum of all completed exercise minutes by the sum of all prescribed exercise minutes. Completed and prescribed minutes will vary for every participant as group and current week of intervention impact the prescription. This plot is an estimate of current intervention adherence. We expect that it will change as data are cleaned.
+
+In response to our 07-26-2022 report, adherence has been updated to include three measures.
+
+1)  Subjective - Bias High: The value reported last meeting. This method always selects the highest number of minutes reported between the Fitbit and Exercise Log.
+2)  Subjective: This method always uses the minutes reported from the Exercise Log.
+3)  Objective: This method uses heart rate data from the Fitbit for aerobic and core & fusion activity and exercises completed as recorded in the Exercise Log for resistance exercise.
+
+```{r figure_3_retired, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+
+figure_3_to_join <- comet_scienctist_markdown %>%
+  select(comet_study_id, Status, Group)
+  
+missing_ex_weeks <- sum(is.na(clean_all_ex_data$final_ex_min))
+
+
+intervention_adherence <- clean_all_ex_data %>%
+  select(-final_ex_min_source) %>%
+  group_by(comet_study_id) %>%
+  summarize(sum_completed_ex_min = sum(final_ex_min, na.rm = T), sum_prescribed_ex_min = sum(prescribed_ex_min, na.rm = T)) %>%
+  mutate(adherence = sum_completed_ex_min/sum_prescribed_ex_min*100) %>%
+  left_join(., figure_3_to_join, by = "comet_study_id") 
+
+summary_mean <- round(mean(intervention_adherence$adherence, na.rm = T), digits = 0)
+summary_min <- round(min(intervention_adherence$adherence, na.rm = T), digits = 0)
+summary_max <- round(max(intervention_adherence$adherence, na.rm = T), digits = 0)
+summary_sd <- round(sd(intervention_adherence$adherence, na.rm = T), digits = 0)
+
+summary_language <- paste0(summary_mean, ", (",summary_sd,")*")
+
+intervention_adherence_graph <- ggplot(intervention_adherence, aes(Group,adherence)) +
+  geom_boxplot() +
+  geom_abline(slope = 0, intercept = 100, linetype = 3) +
+  ylim(0,200) + 
+  ggtitle("COMET Intervention Adherence Estimate") +
+  ylab("Percent Adherence (%)") +
+  theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        plot.background = element_blank(),
+
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+
+ggsave(file.path(data_dir,'dsmc_report','intervention_adherence_closed.png'), intervention_adherence_graph, width = 7, height = 6, units = "in")
+knitr::include_graphics(file.path(data_dir,'dsmc_report','intervention_adherence_closed.png'), dpi = 7) 
+
+
+
+
+```
+```{r figure_3, echo=FALSE, warning=FALSE, message=FALSE}
+
+figure_3_to_join <- comet_scienctist_markdown %>%
+  select(comet_study_id, Status, Group)
+  
+
+combined <- time_based_adherence_temp %>%
+  left_join(., performance_based_adherence_temp, by = c("week","comet_study_id")) %>%
+  filter(!is.na(adherence_score_performance)) %>%
+  pivot_longer(contains("adherence")) %>%
+  group_by(name, comet_study_id) %>%
+  summarise(mean = mean(value, na.rm = T)) %>%
+  mutate(mean_average = mean*100) %>%
+  mutate(name = case_when(name == "adherence_score_high" ~ "Subjective - Bias High",
+                          name == "adherence_score_log" ~ "Subjective",
+                          name == "adherence_score_performance" ~ "Objective")) %>%
+  left_join(., figure_3_to_join, by = "comet_study_id")
+
+adherence_graph_closed <- ggplot(combined,  aes(x = Group, y = mean_average, colour = name)) +
+  geom_boxplot() +
+  geom_abline(slope = 0, intercept = 100, linetype = 3) +
+  ylim(0,200) + 
+  ggtitle("Adherence") +
+  scale_color_manual(values=c("red","black","grey")) +
+  ylab("Percent Adherence (%)") +
+  theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        plot.background = element_blank(),
+        #legend.position = c(.75, .9),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+
+
+ggsave(file.path(data_dir,'dsmc_report','intervention_adherence_closed.png'), adherence_graph_closed, width = 7, height = 5, units = "in")
+knitr::include_graphics(file.path(data_dir,'dsmc_report','intervention_adherence_closed.png'), dpi = 6) 
+
+
+
+
+```
+
+\newpage
+
+
+# Safety Assessments for All Participants: Tables and Listing 
+
+## CTCAE 5.0 Criteria
+
+**Grades**  
+
+Grade refers to the severity of the AE. The CTCAE displays Grades 1 through 5 with unique clinical descriptions of severity for each AE based on this general guideline:  
+
+- **Grade 1** Mild; asymptomatic or mild symptoms; clinical or diagnostic observations only; intervention not indicated.  
+
+- **Grade 2** Moderate; minimal, local or noninvasive intervention indicated; limiting age-appropriate instrumental ADL*.  
+
+- **Grade 3** Severe or medically significant but not immediately life-threatening; hospitalization or prolongation of hospitalization indicated; disabling; limiting self care ADL**.  
+
+- **Grade 4** Life-threatening consequences; urgent intervention indicated.  
+
+- **Grade 5** Death related to AE.  
+
+
+**Relatedness**  
+
+Relatedness refers to the relationship of the AE to the intervention. COMET rates relatedness from not related to definitely related.
+
+- **Not Related** The AE is clearly NOT related to the intervention 
+
+- **Possibly Related** The AE may be related to the intervention  
+
+- **Definitely Related** The AE is clearly related to the intervention
+
+**Definitions**  
+
+- **Adverse Event** Any untoward or unfavorable medical occurrence in a human subject participant, including any abnormal sign, symptom, or disease, temporally associated with the participants’ involvement in the research, whether or not considered related to participation in the research.
+
+- **Event of Interest** Incidental findings or events uncovered during baseline testing not directly attributable to the study. It is often unclear if the event is new onset. Most are pre-existing and asymptomatic i.e., asymptomatic ST segment depression on a maximal exercise test. 
+
+- **System Organ Class (SOC)** The highest level of the MedDRA1 hierarchy, also referred to as System Organ Classe (SOC), is identified by anatomical or physiological system, etiology, or purpose (e.g., SOC Investigations for laboratory test results). CTCAE terms are grouped by MedDRA Primary SOCs. Within each SOC, AEs are listed and accompanied by descriptions of severity (Grade). 
+
+- **Preferred Term** A term that is a unique representation of a specific event used for medical documentation and scientific analyses. Each CTCAE v4.0 term is a MedDRA LLT (Lowest Level Term).
+
+
+
+
+\newpage
+
+##  Table 7a: Incidence of Adverse Events by Preferred Term
+
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_6_events, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+adverse_events_6 <- adverse_event_dsmc %>%
+  left_join(., groups_to_join, by = "record_id") %>%
+  select(Group, ctcae_term) %>%
+  filter(!is.na(Group)) %>%
+  rename("Preferred Term" = ctcae_term)
+
+
+gtsummary::tbl_summary(adverse_events_6,
+                       by = Group,
+                       statistic = list(
+                         all_categorical() ~ "{n} / {N} ({p}%)"
+                       ),
+                       sort = everything() ~ "frequency") %>%
+  modify_header(label ~ "Adverse Events") %>%
+  as_flex_table() %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines(., "Total Events") %>%
+  add_footer_lines(., "N - total number of events") %>%
+  add_footer_lines(., "Adverse events that occurred in participants without an assigned group have been removed from tables sorting by group.") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+
+ 
+```
+\newpage
+
+##  Table 7b: Percent Incidence of Adverse Events by SOC
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+```{r table_6_participants, echo=FALSE, warning=FALSE, message=FALSE}
+
+#This section was adopted on 7/6/22 with some "creative" coding to deal with gtsummary's limitations
+#follow the comments to see what is responsible 
+
+#Create a dataframe with every unique adverse event experiences i.e. if a participant experienced the same AE twice it is removed
+#Format the data frame to use gtsummary
+adverse_events_6_by_participant <- adverse_event_dsmc %>%
+  left_join(., groups_to_join, by = "record_id") %>%
+  filter(!is.na(Group)) %>%
+  select(comet_study_id, Group, ctcae_category) %>%
+  unique(.) %>%     #Remove any adverse events if a participant has had the same ae twice
+  select(-comet_study_id) %>%
+  rename("SOC" = ctcae_category)
+
+
+#Create the gtsummary formatted table
+adverse_events_6_by_participant <- gtsummary::tbl_summary(adverse_events_6_by_participant,
+                       by = Group, 
+                       statistic = list(all_categorical() ~ c("{n}")),
+                       sort = everything() ~ "frequency") 
+
+#Isolate the table section of the gtsummary table and change statistics
+#The gtsummary package is limited with available statistic calculation
+#modify_table isolates the table from the gtsummary list and changes each statistic to be n (n/number randomized)
+modify_table <- adverse_events_6_by_participant$table_body %>%
+  mutate(across(contains("stat"), ~ case_when(!is.na(.x) ~ paste0(.x," (",as.character(round(as.numeric(.x)/nrow(randomized)*100), digits = 0),"%)"))))
+
+#Insert the modified table back into gtsummary list
+adverse_events_6_by_participant$table_body <- modify_table 
+
+#Output table
+adverse_events_6_by_participant %>%
+  modify_header(label ~ "Adverse Events") %>%
+  modify_footnote(all_stat_cols() ~ "n (%)") %>%
+  as_flex_table() %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Total Enrolled = ",nrow(randomized))) %>% 
+  add_header_lines(., "Percent Incidence of Adverse Event") %>%
+  add_footer_lines(., "N - Number of listed adverse event. \n\n(%) - Percent of randomized participants who have experienced the listed adverse event, where a participant's repeat adverse events are removed so as to reflect total percentage of study population experiencing an adverse event.  ") %>% 
+  add_footer_lines(., "Adverse events that occurred in participants without an assigned group have been removed from tables sorting by group.") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+  
+
+
+ 
+```
+\newpage
+
+##  Table 7c: Percent Incidence of Adverse Events by Preferred Term
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+```{r table_6_participants_term, echo=FALSE, warning=FALSE, message=FALSE}
+
+#This section was adopted on 7/6/22 with some "creative" coding to deal with gtsummary's limitations
+#follow the comments to see what is responsible 
+
+#Create a dataframe with every unique adverse event experiences i.e. if a participant experienced the same AE twice it is removed
+#Format the data frame to use gtsummary
+adverse_events_6_by_participant <- adverse_event_dsmc %>%
+  left_join(., groups_to_join, by = "record_id") %>%
+  filter(!is.na(Group)) %>%
+  select(comet_study_id, Group, ctcae_term) %>%
+  unique(.) %>%     #Remove any adverse events if a participant has had the same ae twice
+  select(-comet_study_id) %>%
+  rename("Preferred Term" = ctcae_term)
+
+
+#Create the gtsummary formatted table
+adverse_events_6_by_participant <- gtsummary::tbl_summary(adverse_events_6_by_participant,
+                       by = Group, 
+                       statistic = list(all_categorical() ~ c("{n}")),
+                       sort = everything() ~ "frequency") 
+
+#Isolate the table section of the gtsummary table and change statistics
+#The gtsummary package is limited with available statistic calculation
+#modify_table isolates the table from the gtsummary list and changes each statistic to be n (n/number randomized)
+modify_table <- adverse_events_6_by_participant$table_body %>%
+  mutate(across(contains("stat"), ~ case_when(!is.na(.x) ~ paste0(.x," (",as.character(round(as.numeric(.x)/nrow(randomized)*100), digits = 0),"%)"))))
+
+#Insert the modified table back into gtsummary list
+adverse_events_6_by_participant$table_body <- modify_table 
+
+#Output table
+adverse_events_6_by_participant %>%
+  modify_header(label ~ "Adverse Events") %>%
+  modify_footnote(all_stat_cols() ~ "n (%)") %>%
+  as_flex_table() %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Total Enrolled = ",nrow(randomized))) %>% 
+  add_header_lines(., "Percent Incidence of Adverse Event") %>%
+  add_footer_lines(., "N - Number of listed adverse event. \n\n(%) - Percent of randomized participants who have experienced the listed adverse event, where a participant's repeat adverse events are removed so as to reflect total percentage of study population experiencing an adverse event.  ") %>%
+  add_footer_lines(., "Adverse events that occurred in participants without an assigned group have been removed from tables sorting by group.") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+  
+
+
+ 
+```
+\newpage
+
+
+##  Table 8a: Severity of Adverse Events by Group
+
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_7a, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+adverse_events_7 <- adverse_event_dsmc %>%
+  left_join(., groups_to_join, by = "record_id") %>%
+  filter(!is.na(Group)) %>%
+  rename("Preferred Term" = ctcae_term) %>% 
+  select(Group, Severity)
+
+
+gtsummary::tbl_summary(adverse_events_7,
+                       by = Severity,
+                       sort = everything() ~ "frequency") %>%
+  modify_header(label ~ "") %>%
+  as_flex_table() %>%
+  add_footer_lines(., "Adverse events that occurred in participants without an assigned group have been removed from tables sorting by group.") %>%
+  set_table_properties(., layout = "autofit", width = 1) 
+
+
+
+
+```
+
+\newpage
+
+##  Table 9a: Relatedness of Adverse Events by Group
+
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_7b, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+adverse_events_7 <- adverse_event_dsmc %>%
+  left_join(., groups_to_join, by = "record_id") %>%
+  filter(!is.na(Group)) %>%
+  rename("Preferred Term" = ctcae_term) %>%
+  select(Group, Related)
+
+
+gtsummary::tbl_summary(adverse_events_7,
+                       by = Related, 
+                       sort = everything() ~ "frequency") %>%
+  modify_table_body(~.x %>% dplyr::relocate(stat_2, .after = stat_3)) %>%
+  modify_header(label ~ "") %>%
+  as_flex_table() %>%
+  add_footer_lines(., "Adverse events that occurred in participants without an assigned group have been removed from tables sorting by group.") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+
+
+```
+
+\newpage
+
+
+##  Table 9b: Incidence of Possibly Related or Related Adverse events by Group and Preferred Term 
+
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_8c, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+adverse_events_8 <- adverse_event_dsmc %>%
+  left_join(., groups_to_join, by = "record_id") %>%
+  filter(!is.na(Group)) %>%
+  filter(ae_is_study_related > 0) %>%
+  rename("Preferred Term" = ctcae_term) %>%
+  select("Preferred Term", Group)
+
+
+gtsummary::tbl_summary(adverse_events_8,
+                       by = Group, 
+                       sort = everything() ~ "frequency",
+                       statistic = list(
+                         all_categorical() ~ "{n} / {N} ({p}%)"
+                       )) %>%
+  modify_header(label ~ "") %>%
+  as_flex_table() %>%
+  add_footer_lines(., "Adverse events that occurred in participants without an assigned group have been removed from tables sorting by group.") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+
+
+```
+
+\newpage
+
+
+
+##  Listing 3a: Serious Adverse Events 
+
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_1a, echo=FALSE, warning=FALSE, message=FALSE}
+
+# To do: need to update names and add in outcome column
+
+listing_1 <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_was_ae_serious == 1) %>%
+  left_join(., groups_to_join, by = "record_id") %>%
+  select(comet_study_id, Group, ae_date_of_onset, ae_date_ceased, Related, `SOC and Preferred Term`, ae_dsmc_summary) %>%
+  rename("ID" = comet_study_id, "Summary" = ae_dsmc_summary, "Date of Onset" = ae_date_of_onset, "Date Ceased" = ae_date_ceased)
+
+if(nrow(listing_1) > 0) {
+  listing_1 %>% 
+    flextable() %>% 
+    # add_header_lines(., paste0("Total N = ",completed_baseline)) %>% 
+    # add_header_lines(., "Treatment Duration for All Participants") %>% 
+    theme_booktabs() %>%
+    set_table_properties(., layout = "autofit", width = 1)
+} else {
+  cat("There have been no serious adverse events")
+}
+
+
+```
+
+\newpage
+
+##  Listing 4: Deaths 
+
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_2, echo=FALSE, warning=FALSE, message=FALSE}
+
+# To do: need to update names and add in outcome column
+
+listing_2 <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_did_participant_die == 1) %>% 
+  left_join(., groups_to_join, by = "record_id") %>%
+  rename("ID" = comet_study_id, "Date of Death" = ae_date_of_death, "Cause of Death" = ae_cause_of_death) %>%
+  select("ID", Group, "Date of Death", "Cause of Death", Related) 
+  
+
+if(nrow(listing_2) > 0) {
+  listing_2 %>% 
+    flextable() %>% 
+    autofit() %>%
+    theme_booktabs()
+} else {
+  cat("There have been no deaths.")
+}
+
+
+```
+
+\newpage
+
+##  Listing 5a: New Adverse Events Related to the Intervention
+
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_3a, echo=FALSE, warning=FALSE, message=FALSE}
+####This is actually listing_4a. A protocol deviation listing was added above, and all code below was kept consistent to save time.
+
+listing_3a <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_date >= date_of_last_report) %>%
+  filter(ae_is_study_related != 0) %>%
+  left_join(., groups_to_join, by = "record_id") %>%
+  arrange(desc(.$ae_is_study_related), ae_date) %>%
+  select(comet_study_id, Group, ae_date, Related, Severity, `SOC and Preferred Term`, ae_dsmc_summary) %>%
+  rename("ID" = comet_study_id,"Date" = ae_date, "Summary" = ae_dsmc_summary) 
+
+
+listing_3a %>% 
+  flextable() %>% 
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Adverse Events Related to the Intervention Since Date of Last Report (",date_of_last_report,")")) %>% 
+  theme_booktabs() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+```
+
+\newpage
+### New Adverse Events Related to the Intervention - Presentation Version
+```{r listing_3a_powerpoint, echo=FALSE, warning=FALSE, message=FALSE, fig.width=10}
+#' 20230802 This was added to for the presentation of AEs only. It's not included in the report, but is used to generate a table of AEs that are 
+#' easy to show during the powerpoint
+
+listing_3a <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_date >= date_of_last_report) %>%
+  filter(ae_is_study_related != 0) %>%
+  left_join(., comet_scienctist_markdown, by = "record_id") %>%
+  arrange(Group, ae_date) %>%
+  select(Group, ae_date, Related, Outcome, Severity, ae_event) %>%
+  rename("Date" = ae_date, "Event" = ae_event) 
+
+
+listing_3a %>% 
+  flextable() %>% 
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Adverse Events Related to the Intervention Since Date of Last Report (",date_of_last_report,")")) %>% 
+  theme_booktabs() %>%
+  set_table_properties(., layout = "autofit")
+
+
+
+```
+
+\newpage
+
+
+
+
+##  Listing 5b: New Adverse Events Not Related to Intervention
+
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_3b, echo=FALSE, warning=FALSE, message=FALSE}
+
+listing_3b <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_date >= date_of_last_report) %>%
+  filter(ae_is_study_related == 0) %>%
+  left_join(., groups_to_join, by = "record_id") %>%
+  arrange(ae_date) %>%
+  select(comet_study_id, Group, ae_date, Related, Severity, `SOC and Preferred Term`, ae_dsmc_summary) %>%
+  rename("ID" = comet_study_id,"Date" = ae_date, "Summary" = ae_dsmc_summary) 
+
+
+
+listing_3b %>% 
+  flextable() %>% 
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Adverse Events Not Related to the Intervention Since Date of Last Report (",date_of_last_report,")")) %>% 
+  theme_booktabs() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+```
+
+\newpage
+
+##  Listing 6a: All Adverse Events 
+
+
+Date as of: `r date_as_of` 
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_4a, echo=FALSE, warning=FALSE, message=FALSE}
+
+listing_4a <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  left_join(., groups_to_join, by = "record_id") %>%
+  rename("ID" = comet_study_id, "Date" = ae_date) %>%
+  arrange(desc(.$ae_is_study_related), Date) %>%
+  select("ID", Group, Date, "SOC and Preferred Term", Related, Severity, Serious, Outcome) 
+
+
+listing_4a %>% 
+  flextable() %>% 
+  align(align = "center", part = "header") %>%
+  add_header_lines(., "All Adverse Events") %>% 
+  theme_booktabs() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+```
+\newpage
+

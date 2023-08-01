@@ -1,0 +1,526 @@
+---
+output: 
+  html_document:
+    toc: TRUE
+---
+
+```{r setup, include=FALSE}
+#' @section Development notes:
+
+##### Declare Libraries #####
+library(rio)
+library(lubridate)
+library(tidyverse)
+library(DT)
+  
+###### Build Root Server #####  
+if(Sys.info()["nodename"]=="workstation_1" & Sys.info()["user"]=="study_coordinator_2") {
+  root_p <- file.path("drive")
+  root_server_dir <- file.path(root_p,"study_dir_a")
+  python_cmd_prefix <- "py "
+} else if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+  root_p <- ""
+  # root_server_dir <- file.path(root_p,"ADC_Data")
+  root_server_dir <- file.path(root_p,"COMET")
+  python_cmd_prefix <- "python "
+}
+  
+###### Load Directories #####
+load(file.path(root_server_dir,'study_dir_a','COMET','data','clean','directories.Rdata'))
+
+###### Load Data #####
+load(file.path(data_dir,'clean','comet_clean.Rdata'))
+load(file.path(clean_data_destination,'adherence.Rdata'))
+load(file.path(clean_data_destination,'comet_dxa_clean.Rdata'))
+load(file.path(clean_data_destination,'comet_ecog_clean.Rdata'))
+load(file.path(clean_data_destination,'comet_mri_clean.Rdata'))
+load(file.path(clean_data_destination,'comet_vo2_clean.Rdata'))
+
+message("Loaded libraries and .rdata")
+
+##### COMET database (test entry removed) ######
+comet_scientist_markdown <- comet %>%
+  filter(record_id != 0) %>%
+  filter(redcap_event_name == "baseline_arm_1") %>%
+  mutate(Status = case_when(intervention_status == 1 ~ "Actively on intervention",
+                            intervention_status == 2 ~ "Successfully completed",
+                            intervention_status == 3 ~ "Withdrawn willing to complete testing",
+                            intervention_status == 4 ~ "Withdrawn unwilling to complete testing",
+                            intervention_status == 5 ~ "Lost to Follow-up",
+                            intervention_status == 6 ~ "Terminated Early")) %>%
+  mutate(race_ethnicity = case_when(ethnicity == "Hispanic or Latino" & (race == "White" | race == "None of these fully describe me") ~ "Hispanic or Latino", 
+                                    T ~ race ))
+  
+##### import recruitment projections ####
+recruitment_projection <- import(file.path(data_dir,'scientist_email','recruitment_projection.xlsx')) %>%
+  mutate(week = week(ymd(Date)), year = year(ymd(Date)))
+
+
+#### Import data Dictionaries ####
+redcap_data_dict <- data.frame(file = list.files(file.path(data_dir,'data_dictionary'), full.names = TRUE, pattern = ".csv")) %>%
+  filter(grepl("DataDictionary",file)) %>%
+  pull(.) %>%
+  import(.) 
+
+redcap_instrument_mappings <- data.frame(file = list.files(file.path(data_dir,'data_dictionary'), full.names = TRUE, pattern = ".csv")) %>%
+  filter(grepl("Instrument",file)) %>%
+  pull(.) %>%
+  import(.)
+
+#All output files
+data_dictionaries_files <- data.frame(file = list.files(file.path(data_dir,'data_dictionary'), full.names = TRUE, pattern = ".csv")) %>%
+  filter(grepl("dd",file))
+
+data_dictionaries_all <- data.frame()
+
+for(i in 1:nrow(data_dictionaries_files)) {
+  temp_df <- read.csv(data_dictionaries_files[i,]) %>%
+    select(-possible_values)
+  
+  data_dictionaries_all <- bind_rows(temp_df, data_dictionaries_all)
+}
+
+##### Source consort diagram to use throughout document ####
+# source(file.path(data_dir,'dsmc_report','dsmc_consort_generator_open.R'))
+# source(file.path(script_dir,'06_exercise_data_consolidation.R'))
+# source(file.path(script_dir,'06_exercise_adherence.R'))
+
+#### Expected Data Guides #####
+expected_ecog_data <- import(file.path(data_dir,'data_quality_email','expected_p_data','expected_cog_values.csv'))
+expected_dxa_cols <- import(file.path(data_dir,'data_quality_email','expected_p_data','expected_dxa_cols.csv'))
+
+#### Import Aim Codebook ####
+aim_codebook <- import(file.path(data_dir,'data_quality_email','aim_codebook.xlsx'))
+
+```
+
+```{r logo, echo = FALSE,  fig.show = "hold", out.width = "25%", fig.align = "center"}
+    knitr::include_graphics(file.path(data_dir,'participant_email','COMETLogo.jpg'))
+  
+```
+
+**Instructions for MRI, Blood, and GXT Missing Data Report**<br>
+
+-   Use the tables to figure out what data are missing.
+
+-   To filter for data missing without a reason, change the expected_missing slider to less than 1.
+
+-   The tables below can be downloaded to CSV by clicking the 'CSV' button.
+
+### Missing REDCap Data
+
+<center>
+
+```{r missing_redcap_data, echo=FALSE, fig.width=12}
+#### Data Dictionaries ####
+#' Use data dictionary to find expected fields in REDCap
+expected_fields_redcap <- redcap_data_dict %>%
+  filter(`Required Field?` == 'y') %>%
+  filter(`Form Name` != 'concurrent_medications') %>%
+  filter(`Field Type` != 'checkbox') %>%
+  mutate(visit = case_when(`Form Name` == "physical_assessment_visit" | `Form Name` == "bloodbased_markers" ~ "gxt",
+                           `Form Name` == "mri_visit" ~ "mri",
+                           T ~ "cog")) %>%
+  rename("field_name" = `Variable / Field Name`, "form_name" = `Form Name`) %>%
+  select(field_name, form_name, visit) %>%
+  left_join(., redcap_instrument_mappings, by = c("form_name" = "form"), relationship = "many-to-many") %>%
+  filter(!(field_name == "cog_wtar" & unique_event_name == "week_26_arm_1")) %>% #removing wtar at week 26 and week 52 because test not done then
+  filter(!(field_name == "cog_wtar" & unique_event_name == "week_52_arm_1")) %>%
+  filter(!(field_name == "cog_wtar_raw" & unique_event_name == "week_26_arm_1")) %>% #removing wtar at week 26 and week 52 because test not done then
+  filter(!(field_name == "cog_wtar_raw" & unique_event_name == "week_52_arm_1"))
+
+#' Use data dictionary to find expected fields from p drive
+expected_fields_p_drive <- data_dictionaries_all %>%
+  filter(grepl("vo2|dxa|cog|mprage", data_frame_name)) %>%
+  mutate(visit = case_when(str_detect(data_frame_name,"vo2") ~ "gxt",
+                           str_detect(data_frame_name,"mprage") ~ "mri",
+                           str_detect(data_frame_name,"dxa") ~ "gxt",
+                           str_detect(data_frame_name,"cog") ~ "cog"))
+
+#### PT Status and expected missing ####
+#' Find each participant status and expected data
+participant_time_points <- comet %>%
+  filter(!is.na(comet_study_id)) %>%
+  select(record_id, comet_study_id, redid, presentweeknum, contains("sched")) %>%
+  select(-contains("reschedule")) %>%
+  pivot_longer(cols = contains("sched")) %>%
+  mutate(expected = case_when(now() > value ~ 1,
+                              now() <= value ~ 0)) %>%
+  arrange(comet_study_id) %>%
+  mutate(week = case_when(str_detect(name, "baseline") ~ "baseline_arm_1",
+                          str_detect(name,"26") ~ "week_26_arm_1",
+                          str_detect(name,"52") ~ "week_52_arm_1")) %>%
+  mutate(visit = case_when(str_detect(name, "cog") ~ "cog",
+                           str_detect(name,"gxt") ~ "gxt",
+                           str_detect(name,"mri") ~ "mri")) %>%
+  mutate(record_id = as.character(record_id))
+  
+expected_missing_data <- comet %>%
+  filter(record_id %in% participant_time_points$record_id) %>%
+  select(record_id, redcap_event_name, contains("missing"), -contains("reason")) %>%
+  pivot_longer(cols = contains("missing")) %>%
+  filter(value == 1) %>%
+  mutate(visit = case_when(str_detect(name,"ex_") ~ "gxt",
+                           str_detect(name,"mri") ~ "mri",
+                           str_detect(name,"blood") ~ "gxt",
+                           T ~ "cog")) %>%
+  left_join(., redcap_data_dict, by = c("name" = "Variable / Field Name")) %>%
+  rename(expected_missing = value, type_missing = name, form_name = `Form Name`) %>%
+  select(record_id, redcap_event_name, type_missing, expected_missing, form_name, visit)
+  
+
+
+
+
+#### Create all comet data long ####
+id_to_join <- comet %>%
+  filter(!is.na(comet_study_id)) %>%
+  select(record_id, redid, comet_study_id)
+
+pt_time_point_to_join <- participant_time_points %>%
+  select(-c("comet_study_id", "presentweeknum", "name")) %>%
+  rename("expected_date" = value)
+
+reason_missing_list <- c("ASKU","NAVU","NASK")
+
+#### All missing REDCap data
+#' Start with all comet data
+#' Select fields that are required according to the data dictionary
+#' Join with ids to get comet_study_id for every record
+#' Remove any data from participants who dont have IDs
+#' pivot longer
+#' Remove any records with data other than NA or blank
+#' Join with expected fields from REDCap. Now you have a dataframe with field_name, form_name, and time point. 
+#' Remove any data that is not present at a time_point. Now we have all fields at necessary time points
+#' Join with pt data for expectedness
+#' Filter for to remove unexpected data
+#' 
+comet_long <- comet %>%
+  select("record_id","redcap_event_name","presentweeknum","group","race","gender", expected_fields_redcap$field_name) %>%
+  filter(redcap_event_name == "baseline_arm_1" | redcap_event_name == "week_26_arm_1" | redcap_event_name == "week_52_arm_1") %>%
+  left_join(., id_to_join, by = "record_id") %>%
+  filter(!is.na(comet_study_id)) %>%
+  mutate(across(everything(), as.character)) %>%
+  pivot_longer(cols = -c("record_id","comet_study_id","redcap_event_name","presentweeknum","group","race","gender")) %>%
+  mutate(value = case_when(value == "-997" ~ "NASK",
+                           value == "-998" ~ "ASKU",
+                           value == "-999" ~ "NAVU",
+                           value == "" ~ NA_character_,
+                           T ~ value)) %>%
+  filter(is.na(value) | value %in% reason_missing_list)  %>%
+  left_join(., expected_fields_redcap, by = c("name" = "field_name", "redcap_event_name" = "unique_event_name")) %>%
+  filter(!is.na(form_name)) %>%
+  left_join(., pt_time_point_to_join, by = c("visit","record_id","redcap_event_name" = "week")) %>%
+  filter(expected == 1)  %>%
+  mutate(record_id = as.numeric(record_id)) %>%
+  left_join(., expected_missing_data, by = c("record_id","redcap_event_name","form_name","visit"), relationship = "many-to-many") %>%
+  mutate(reason_missing = case_when(!is.na(value) ~ value,
+                                    !is.na(type_missing) ~ type_missing,
+                                    T ~ NA_character_)) %>%
+  mutate(expected_missing = as.numeric(expected_missing)) %>%
+  mutate(expected_missing = case_when(reason_missing %in% reason_missing_list ~ 1, 
+                                      is.na(expected_missing) ~ 0,
+                                      T ~ expected_missing)) %>%
+  left_join(., aim_codebook, by = "name") %>%
+  mutate(aim = case_when(!is.na(aim) ~ aim,
+                         T ~ 0)) %>%
+  arrange(as.numeric(comet_study_id)) %>%
+  mutate(expected_date = as_date(expected_date)) %>%
+  filter(form_name %in% c('mri_visit','physical_assessment_visit','bloodbased_markers'))
+  
+
+comet_long %>%
+  select(comet_study_id,redid, redcap_event_name, name, expected_missing, expected_date, reason_missing, aim) %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE,
+            extensions = 'Buttons',
+            options = list(columnDefs =
+                             list(list(className = 'dt-center',
+                                       targets = "_all")),
+                           pageLength = 10,
+                           dom = 'Bfrtip',
+                           buttons = c('csv')))
+
+whats_missing <- comet_long %>%
+  group_by(name) %>%
+  count()
+
+
+
+```
+
+</center>
+
+<br>
+
+### Missing P: Drive Data
+
+<center>
+
+```{r missing_p_data, echo=FALSE, fig.width=12}
+#### Data Dictionaries ####
+#' Use data dictionary to find expected fields from p drive
+expected_fields_p_drive <- data_dictionaries_all %>%
+  filter(grepl("vo2|dxa|cog|mprage", data_frame_name)) %>%
+  mutate(visit = case_when(str_detect(data_frame_name,"vo2") ~ "gxt",
+                           str_detect(data_frame_name,"mprage") ~ "mri",
+                           str_detect(data_frame_name,"dxa") ~ "gxt",
+                           str_detect(data_frame_name,"cog") ~ "cog"))
+
+#### PT Status and expected missing ####
+#' Find each participant status and expected data
+participant_time_points <- comet %>%
+  filter(!is.na(comet_study_id)) %>%
+  select(record_id, comet_study_id, redid, presentweeknum, contains("sched")) %>%
+  select(-contains("reschedule")) %>%
+  pivot_longer(cols = contains("sched")) %>%
+  mutate(expected = case_when(now() > value ~ 1,
+                              now() <= value ~ 0)) %>%
+  arrange(comet_study_id) %>%
+  mutate(week = case_when(str_detect(name, "baseline") ~ "baseline_arm_1",
+                          str_detect(name,"26") ~ "week_26_arm_1",
+                          str_detect(name,"52") ~ "week_52_arm_1")) %>%
+  mutate(visit = case_when(str_detect(name, "cog") ~ "cog",
+                           str_detect(name,"gxt") ~ "gxt",
+                           str_detect(name,"mri") ~ "mri")) %>%
+  mutate(record_id = as.character(record_id))
+
+expected_missing_data <- comet %>%
+  filter(record_id %in% participant_time_points$record_id) %>%
+  select(record_id, redcap_event_name, contains("missing"), -contains("reason")) %>%
+  pivot_longer(cols = contains("missing")) %>%
+  filter(value == 1) %>%
+  mutate(visit = case_when(str_detect(name,"ex_") ~ "gxt",
+                           str_detect(name,"mri") ~ "mri",
+                           str_detect(name,"blood") ~ "gxt",
+                           T ~ "cog")) %>%
+  left_join(., redcap_data_dict, by = c("name" = "Variable / Field Name")) %>%
+  rename(expected_missing = value, type_missing = name, form_name = `Form Name`) %>%
+  select(record_id, redcap_event_name, type_missing, expected_missing, form_name, visit) %>%
+  filter(type_missing == "ex_gxt_missing" | type_missing == "ex_missing" |
+           type_missing == "ex_dxa_missing" | type_missing ==  "mri_missing" | type_missing == "cog_missing")
+
+#### All missing REDCap data
+#' Start with all comet data
+#' Select fields that are required according to the data dictionary
+#' Join with ids to get comet_study_id for every record
+#' Remove any data from participants who dont have IDs
+#' pivot longer
+#' Remove any records with data other than NA or blank
+#' Join with expected fields from REDCap. Now you have a dataframe with field_name, form_name, and time point.
+#' Remove any data that is not present at a time_point. Now we have all fields at necessary time points
+#' Join with pt data for expectedness
+#' Filter for to remove unexpected data
+#'
+#All expected data
+expected_data <- participant_time_points %>%
+  filter(expected == 1) %>%
+  mutate(record_id = as.numeric(record_id)) %>%
+  left_join(., expected_missing_data, by = c("week" = "redcap_event_name","visit","record_id"))
+
+missing_data <- data.frame(measure_name = character(), redid = numeric(), tp = character(), 
+                           type = character(), expected_missing = numeric(), reason_missing = character(), expected_date = POSIXct())
+
+#' Loop through expected data and check against what's there and not. I'm sure there
+#' is a more efficient way to do this, but I'm on a time crunch 1.24.23 JC
+for(i in 1:nrow(expected_data)){
+
+  current <- expected_data[i,]
+
+  if(current$visit == "cog"){
+      
+    tmp_cog <- full_cog %>%
+      filter(pin == current$redid & name_timepoint == current$name) 
+    
+    tmp_missing <- anti_join(expected_ecog_data, tmp_cog, by = "measure_name")
+    
+    if(nrow(tmp_missing) > 0) {
+      tmp_missing <- tmp_missing %>%
+        mutate(redid = current$redid, tp = current$week, type = "cog",
+               expected_missing = current$expected_missing, reason_missing = current$form_name,
+               expected_date = as_date(current$value))
+      
+      missing_data <- bind_rows(missing_data, tmp_missing)
+    }
+
+  } else if (current$visit == "gxt") {
+
+    #### vo2_data_final ####
+    tmp_vo2_data_final <- vo2_data_final %>%
+      filter(as.numeric(RED) == current$redid & TP == current$week) 
+    
+    if(nrow(tmp_vo2_data_final) == 0) {
+      tmp_missing <- data.frame(measure_name = "vo2_data_final") %>%
+        mutate(redid = current$redid, tp = current$week, type = "gxt",
+               expected_missing = current$expected_missing, reason_missing = current$form_name,
+               expected_date = as_date(current$value))
+      
+      missing_data <- bind_rows(missing_data, tmp_missing)
+    }
+    
+    #### vo2_summary_measures ####
+    tmp_vo2_summary_measures <- vo2_summary_measures %>%
+      filter(as.numeric(RED) == current$redid & TP == current$week) %>%
+      pivot_longer(-c("Date","FullID","HSC","RED","ID","TP")) %>%
+      filter(!is.na(value))
+    
+    expected_summary_measures_fields <- expected_fields_p_drive %>%
+      filter(data_frame_name == "vo2_summary_measures_dd")
+    
+    tmp_missing <- anti_join(expected_summary_measures_fields, tmp_vo2_summary_measures, by = c("variable" = "name")) %>%
+      filter(!variable %in% c("Date","FullID","HSC","RED","ID","TP")) %>%
+      select(variable) %>%
+      rename(measure_name = variable)
+    
+    if(nrow(tmp_missing) > 0) {
+      tmp_missing <- tmp_missing %>%
+        mutate(redid = current$redid, tp = current$week, type = "gxt",
+               expected_missing = current$expected_missing, reason_missing = current$form_name,
+               expected_date = as_date(current$value))
+      
+      missing_data <- bind_rows(missing_data, tmp_missing)
+    }
+    
+    #### most_recent_dxa_set ####
+    tmp_most_recent_dxa_set <- most_recent_dxa_set %>%
+      filter(study_id == current$comet_study_id & redcap_event_name == current$week) %>%
+      pivot_longer(where(is.numeric))
+
+    tmp_missing <- anti_join(expected_dxa_cols, tmp_most_recent_dxa_set, by = c("name")) %>%
+      rename(measure_name = name)
+    
+    if(nrow(tmp_missing) > 0) {
+      tmp_missing <- tmp_missing %>%
+        mutate(redid = current$redid, tp = current$week, type = "dxa",
+               expected_missing = current$expected_missing, reason_missing = current$form_name,
+               expected_date = as_date(current$value))
+      
+      missing_data <- bind_rows(missing_data, tmp_missing)
+    }
+    
+  } else if (current$visit == "mri") {
+      
+    tmp_mri <- mprage_files %>%
+      filter(comet_study_id == current$comet_study_id & name == current$name)
+
+    tmp_missing <- anti_join(current, tmp_mri, by = "name")
+    
+    if(nrow(tmp_missing) > 0) {
+      tmp_missing <- tmp_missing %>%
+        mutate(measure_name = "mprage") %>%
+        select(measure_name, redid, visit, week) %>%
+        rename(tp = week, type = visit) %>%
+        mutate(expected_missing = current$expected_missing, reason_missing = current$form_name,
+               expected_date = as_date(current$value))
+      
+      missing_data <- bind_rows(missing_data, tmp_missing)
+    }
+  }
+}
+
+comet_ids_to_join <- comet %>%
+  filter(!is.na(comet_study_id)) %>%
+  select(redid, comet_study_id)
+
+missing_data_2 <- missing_data %>%
+  mutate(expected_missing = case_when(is.na(expected_missing) ~ 0,
+                                      T ~ expected_missing)) %>%
+  left_join(., aim_codebook, by = c("measure_name" = "name")) %>%
+  mutate(aim = case_when(!is.na(aim) ~ aim,
+                         T ~ 0)) %>%
+  mutate(expected_date = as_date(expected_date)) %>%
+  filter(type %in% c('mri','gxt'))
+
+missing_data_2 %>%
+  left_join(., comet_ids_to_join, by = "redid") %>%
+  select(comet_study_id, redid, tp, measure_name, type, expected_missing, expected_date, everything()) %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE,
+            extensions = 'Buttons',
+            options = list(columnDefs =
+                             list(list(className = 'dt-center',
+                                       targets = "_all")),
+                           pageLength = 10,
+                           dom = 'Bfrtip',
+                           buttons = c('csv')))
+
+```
+
+</center>
+
+<br>
+
+### ID, Naming, and Timepoint Issues
+
+<center>
+
+```{r id_issues, echo=FALSE}
+
+vo2_id_issues <- vo2_data_final %>%
+  mutate(Date = ymd(Date)) %>%
+  filter(is.na(TP)) %>%
+  rename(redid = RED, comet_study_id = ID, date = Date) %>%
+  select(redid, comet_study_id, date) %>%
+  mutate(measure_name = "vo2_data_final") %>%
+  mutate(across(where(is.numeric), as.character))
+
+vo2_id_issues_2 <- vo2_summary_measures %>%
+  mutate(Date = ymd(Date)) %>%
+  filter(is.na(TP)) %>%
+  rename(redid = RED, comet_study_id = ID, date = Date) %>%
+  select(redid, comet_study_id, date) %>%
+  mutate(measure_name = "vo2_summary_measures") %>%
+  mutate(across(where(is.numeric), as.character))
+
+dxa_id_issues <- most_recent_dxa_set %>%
+  filter(is.na(redcap_event_name)) %>%
+  select(red, study_id, measure_date) %>%
+  rename(redid = red, comet_study_id = study_id, date = measure_date) %>%
+  mutate(measure_name = "dxa") %>%
+  mutate(across(where(is.numeric), as.character))
+
+mri_id_issues <- mprage_files %>%
+  filter(is.na(name)) %>%
+  select(red, comet_study_id, date) %>%
+  rename(redid = red) %>%
+  mutate(measure_name = "mri") %>%
+  mutate(across(where(is.numeric), as.character))
+
+id_issues <-  vo2_id_issues %>%
+  bind_rows(., vo2_id_issues_2) %>%
+  bind_rows(., dxa_id_issues) %>%
+  bind_rows(., mri_id_issues)
+
+#' Data Cleaning Notes 
+#' 2.2.23: redid-12060 spatial_rel file is blank. JC
+#' 2.2.23: redid-12345 stroop file, unsure who it belongs to but doesn't match any testing dates or ids. JC
+id_issues %>%
+  filter(!(redid == "12060" & is.na(date))) %>%
+  filter(!(redid == "12345" & date == ymd("20220628"))) %>%
+  arrange(as.numeric(redid)) %>%
+  select(redid, comet_study_id, everything()) %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE,
+            extensions = 'Buttons',
+            options = list(columnDefs =
+                             list(list(className = 'dt-center',
+                                       targets = "_all")),
+                           pageLength = 10,
+                           dom = 'Bfrtip',
+                           buttons = c('csv')))
+
+
+```
+
+</center>
+
+<br>

@@ -1,0 +1,1 @@
+To whom it may concern. This is an automated email from the COMET Study. It looks like last night the automated bootstrap for REDCap project "COMET - Differential Effects of Exercise Modality" did not execute. Please investigate and reinitiate the bootstrap. Thanks! - COMET Team

@@ -1,0 +1,1056 @@
+---
+output: 
+  html_document:
+      toc: TRUE
+
+---
+
+```{r setup, include=FALSE}
+##### Declare Libraries #####
+library(rio)
+library(httr)
+library(lubridate)
+library(tidyverse)
+library(htmlTable)
+library(R.utils)
+library(gtools)
+library(flextable)
+library(DT)
+
+###### Build Root Server #####  
+if(Sys.info()["nodename"]=="workstation_1" & Sys.info()["user"]=="study_coordinator_2") {
+  root_p <- file.path("drive")
+  root_server_dir <- file.path(root_p,"study_dir_a")
+  python_cmd_prefix <- "py "
+} else if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+  root_p <- ""
+  # root_server_dir <- file.path(root_p,"ADC_Data")
+  root_server_dir <- file.path(root_p,"COMET")
+  python_cmd_prefix <- "python "
+}
+
+###### Load Directories #####
+load(file.path(root_server_dir,'study_dir_a','COMET','data','clean','directories.Rdata'))
+
+###### Source Helper Functions ####
+source(file.path(script_dir,'00_fitbit_functions.R'))
+
+###### Load Data #####
+load(file.path(data_dir,'clean','comet_clean.Rdata'))
+load(file.path(data_dir,'clean','ex_min_clean.Rdata'))
+load(file.path(data_dir,'clean','text_notification_log.Rdata'))
+load(file.path(data_dir,'participant_reports','current.Rdata'))
+load(file.path(clean_data_destination,'comet_vo2_clean.Rdata'))
+load(file.path(clean_data_destination,'adherence.Rdata'))
+
+
+##### Gym List #########
+gym_list <- data.frame(id = seq(1:13), gym = c("Paul Henson YMCA", "Platte County South YMCA","North Kansas City YMCA","Olathe YMCA","Blue Springs Fieldhouse","Platte County North YMCA","Linwood YMCA","Providence YMCA","Cleaver YMCA","Bonner Springs YMCA","Red Bridge YMCA","Kirmayer","Kirk Family YMCA"))
+
+
+
+###### Load Personal Trainer List #####
+trainer_list <- import(file.path(data_dir,'ymca_liason_email','PHITPersonalTrainers.csv')) %>%
+  filter(is.na(redcap_repeat_instance)) %>%
+  select(record_id, first_name, last_name, work_email, trainer_status, organization, location_y) 
+
+##### App info ####
+client_info <- import(file.path(project_dir,'data','read_write','read_write','client_info.csv'))
+
+#### User info ####
+fitbit_users <- import(file.path(project_dir,'data','read_write','read_write','fitbit_users.csv'))
+
+######### Check to see if tokens need to be refreshed #####
+state <- get_status(usercode = fitbit_users$user[1], token = fitbit_users$access_token[1])
+
+if(state >= 400) {
+  source(file.path(script_dir,'02_refresh_token.R'))
+}
+
+current_fitbit <- fitbit_users %>%
+  filter(id == current$comet_study_id)
+
+##### COMET database (test entry removed) ######
+current <- current %>%
+  mutate(Status = case_when(intervention_status == 1 ~ "Actively on intervention",
+                            intervention_status == 2 ~ "Successfully completed",
+                            intervention_status == 3 ~ "Withdrawn willing to complete testing",
+                            intervention_status == 4 ~ "Withdrawn unwilling to complete testing",
+                            intervention_status == 5 ~ "Lost to Follow-up",
+                            intervention_status == 6 ~ "Terminated Early"))  %>%
+  mutate(group_name = case_when(group == 2 ~ "Toning",
+                           group == 3 ~ "Endurance", 
+                           group == 4 ~ "Resistance",
+                           group == 5 ~ "Combo")) %>%
+  mutate(final_week = case_when(intervention_status == 1 & presentweeknum <= 52 ~ presentweeknum,
+                                intervention_status == 1 & presentweeknum > 52 ~ 52,
+                                is.na(intervention_status) & presentweeknum <= 52 ~ presentweeknum,
+                                intervention_status == 2 ~ 52,
+                                intervention_status == 3 ~ as.numeric((int_withdrew_date - comet_interventionstart)/7),
+                                intervention_status == 4 ~ as.numeric((int_withdrew_date - comet_interventionstart)/7), 
+                                intervention_status == 5 ~ as.numeric((int_date_termearly - comet_interventionstart)/7))) %>%
+  left_join(., trainer_list, by = c("gym_trainer" =  "record_id")) %>%
+  mutate(gym_location = as.numeric(gym_location)) %>%
+  left_join(., gym_list, by = c("gym_location" = "id")) 
+ 
+
+# #Options
+options(digits = 2)
+
+#### Missing Weeks #####
+current_ex_log <- exercise_log %>%
+  filter(comet_study_id == current$comet_study_id) %>%
+  mutate(log_monday = as.character(log_monday))
+
+missing_current <- as.data.frame(c(1:(current$final_week-1))) %>%
+  rename(weeknum = c(1)) %>%
+  mutate(comet_study_id = current$comet_study_id) %>%
+  mutate(log_monday = as.character(current$comet_interventionstart+(weeknum-1)*7)) %>%
+  anti_join(current_ex_log, temp, by="log_monday") %>%
+  select(comet_study_id, everything())
+
+#### Ongoing AEs#####
+###### import ctcae categories and terms #######
+ctcae_categories <- import(file.path(data_dir,'dsmc_report','CTCAE_v5.0_categories.xlsx'))
+ctcae_terms <- import(file.path(data_dir,'dsmc_report','CTCAE_v5.0_terms.xlsx'))
+
+#### To Join - When a datatable only has record_id, this is used to link to comet_study_id ######
+to_join <- comet %>%
+  filter(!is.na(comet_study_id)) %>%
+  select(record_id, comet_study_id, presentweeknum)
+
+
+aes <- adverse_event %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  left_join(., to_join, by = "record_id") %>%
+  mutate(Outcome = case_when(ae_outcome == 1 ~ "Recovered, without treatment",
+                             ae_outcome == 2 ~ "Recovered, with treatment",
+                             ae_outcome == 3 ~ "Still Present, no treatment",
+                             ae_outcome == 4 ~ "Still Present, being treated",
+                             ae_outcome == 5 ~ "Residual effect(s) present - no treatment",
+                             ae_outcome == 6 ~ "Residual effect(s) present- being treated",
+                             ae_outcome == 7 ~ "Subject died")) %>%
+  mutate("Form Status" = case_when(adverse_event_complete == 0 ~ "Incomplete",
+                                    adverse_event_complete == 1 ~ "Unverified",
+                                    adverse_event_complete == 2 ~ "Complete")) %>%
+  left_join(., ctcae_terms, by = c("ae_ctcae_term" = "ctcae_term_identifier")) %>%
+  rename("Study ID" = comet_study_id, "Weeks on Intervention" = presentweeknum, "Preferred Term" = ctcae_term) %>%
+  select("Study ID", "Preferred Term", Outcome, ae_date_of_onset, ae_pi_sign_line, ae_progress_note, "Form Status") 
+
+
+#### Current Exercise Prescription ####
+current_exercise_prescription <- exercise_prescriptions %>%
+  filter(id == current$comet_study_id)
+
+tw <- current_exercise_prescription %>%
+  filter(week == current$presentweeknum)
+
+hr_below <- case_when(is.na(tw$hr_max) ~ 100,
+                      T ~ tw$hr_max)
+
+prescription_text <- if(current$group == 2){
+  paste0(tw$cf_duration," minutes below ",hr_below," bpm")
+} else if (current$group == 3){
+  paste0(tw$aerobic_duration," minutes between ",tw$hrr_min," and ",tw$hrr_max," bpm")
+} else if(current$group == 4){
+  paste0("Weights: ", tw$wt_sets," sets x ",tw$wt_reps," reps at ",tw$wt_intensity,"% 1-RM.\n Bodyweight: ",
+         tw$bodyweight_sets," sets x ",tw$bodyweight_reps," reps.\n Core & Fusion: ",tw$cf_duration," minutes below ",hr_below," bpm")
+} else if (current$group == 5){
+  paste0("Endurance: ",tw$aerobic_duration," minutes between ",tw$hrr_min," and ",tw$hrr_max," bpm.\n Weights: "
+         , tw$wt_sets," sets x ",tw$wt_reps," reps at ",tw$wt_intensity,"% 1-RM.\n Bodyweight: ",
+         tw$bodyweight_sets," sets x ",tw$bodyweight_reps," reps.")
+}
+
+#### Current Fitbit Data #####
+current_fitbit_hr <- hr_all_df %>%
+  filter(comet_study_id == current$comet_study_id)
+
+current_fitbit_activities <- activities_all_df %>%
+  filter(comet_study_id == current$comet_study_id)
+
+current_fitbit_steps <- steps_all_df %>%
+  filter(comet_study_id == current$comet_study_id)
+
+##### Med List ####
+meds_hash <-  import(file.path(data_dir,'med_monitor_report','med_codes.csv')) %>%
+  mutate(value = as.character(value))
+
+
+
+
+```
+
+```{r logo, echo = FALSE,  fig.show = "hold", out.width = "15%", fig.align = "right", include=FALSE}
+    knitr::include_graphics(file.path(data_dir,'participant_email','COMETLogo.jpg'))
+  
+```
+
+
+
+<center>
+# `r paste0("146904_",current$redid,"_",str_pad(current$comet_study_id, width = 3, side = "left", pad = "0"))`
+</center>
+<br>
+
+<center>
+Name: `r paste0(current$scrn_fname,' ',current$scrn_lname)` &nbsp;&nbsp;&nbsp; Phone: `r current$scrn_phone` &nbsp;&nbsp;&nbsp; Email: `r current$scrn_main_email`<br> 
+Group: `r current$group_name` &nbsp;&nbsp;&nbsp; Status: `r current$Status` &nbsp;&nbsp;&nbsp; Current Week: `r current$final_week` <br>
+Trainer: `r paste(current$first_name, current$last_name)` &nbsp;&nbsp;&nbsp; Gym: `r current$gym`<br>
+Current Prescription: `r prescription_text`
+</center>
+
+### Upcoming Testing
+<center>
+```{r testing, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis', include=current$intervention_status <= 3 | is.na(current$intervention_status)}
+
+upcoming_visits <- current %>%
+  select(presentweeknum, comet_interventionstart, comet_week26date, comet_week26cogsched, comet_week52date, comet_week52cogsched, comet_week52gxtsched, comet_week52mrisched) %>%
+  mutate_at(vars(contains("date")), ~ format.Date(.x, "%m-%d-%Y")) %>%
+  mutate_at(vars(contains("sched")), ~ format.Date(.x, "%m-%d-%Y %H:%M")) %>%
+  replace(is.na(.), "Need to Schedule")  %>%
+  mutate(`Week of Testing` = case_when(presentweeknum < 34 ~ 26,
+                                       TRUE ~ 52)) %>%
+  mutate(`Approximate Date` = case_when(presentweeknum < 34 ~ comet_week26date,
+                                        TRUE ~ comet_week52date))  %>%
+  mutate(`Scheduled Cognitive Testing` = case_when(presentweeknum < 34 ~ comet_week26cogsched,
+                                                   TRUE ~ comet_week52cogsched)) %>%
+  mutate(`Scheduled GXT Testing` = case_when(presentweeknum < 34 ~ "No GXT at week 26",
+                                             TRUE ~ comet_week52gxtsched)) %>%
+  mutate(`Scheduled MRI Testing` = case_when(presentweeknum < 34 ~ "No MRI at week 26",
+                                             TRUE ~ comet_week52mrisched)) %>%
+  mutate(`Beginning of Window` = case_when(presentweeknum < 34 ~ comet_interventionstart + weeks(23),
+                                             TRUE ~ comet_interventionstart + weeks(49))) %>%
+  mutate(`End of Window` = case_when(presentweeknum < 34 ~ comet_interventionstart + weeks(27) + days(4),
+                                     TRUE ~ comet_interventionstart + weeks(53) + days(4))) %>%
+  mutate(`Last Out of Window Collection Date` = case_when(presentweeknum < 34 ~ comet_interventionstart + weeks(33) + days(4),
+                                     TRUE ~ comet_interventionstart + weeks(59) + days(4))) %>%
+  select(`Week of Testing`, `Approximate Date`, `Scheduled Cognitive Testing`, `Scheduled GXT Testing`, `Scheduled MRI Testing`, `Beginning of Window`,`End of Window`, `Last Out of Window Collection Date` )
+    
+
+  if(nrow(upcoming_visits)>0)
+  {
+    upcoming_visits %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>%
+      htmlTable(.,
+                rnames = F,
+      )
+  } else {
+    cat(paste0("None Missing"))
+  }
+
+
+```
+
+</center><br>
+
+
+
+```{r meds, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis', include=FALSE}
+# meds <-  comet %>%
+#   filter(redcap_event_name =="baseline_arm_1") %>%
+#   select(record_id, starts_with("meds"), -meds_none, -meds_betablocker, contains("reason")) %>%
+#   filter(record_id == current$record_id) %>%
+#   mutate(across(everything(), ~ as.character(.))) %>%
+#   pivot_longer(cols = -record_id) %>%
+#   mutate(identifier = case_when(grepl("beta",name) ~ "beta",
+#                                 T ~str_extract(name,"\\(?[0-9,.]+\\)?"))) %>%
+#   mutate(event = str_sub(name, -1)) %>%
+#   mutate(event = case_when(is.na(as.numeric(event)) ~ "1",
+#                            T ~ event)) %>%
+#   mutate(names = case_when(grepl("date",name) ~ "date",
+#                            grepl("reason",name) ~ "reason",
+#                            grepl("rsn",name) ~ "reason",
+#                            grepl("type",name) ~ "change",
+#                            grepl("reason",name) ~ "reason",
+#                            grepl("bsln",name) ~ "on at baseline",
+#                            grepl("started",name) ~ "started",
+#                            T ~ "med_name")) %>%
+#   filter(!is.na(value) & value != "") 
+#   pivot_wider(id_cols = c(record_id,identifier,event), names_from = names, values_from = value)
+#   left_join(., meds_hash, by = c("med_name" = "value")) %>%
+#   mutate(med = case_when(is.na(name) ~ med_name,
+#                          TRUE ~ name)) %>%
+#   select(med, everything(), -med_name, -name, -record_id)
+# 
+# ##### Clean Log #####
+# datatable(meds,
+#           rownames = F,
+#           filter = "top",
+#           class = 'cell-border stripe',
+#           editable = TRUE, 
+#               options = list(columnDefs = 
+#                                list(list(className = 'dt-center', 
+#                                          targets = "_all")),
+#                              pageLength = 20))
+
+
+```
+### Adherence
+<center>
+```{r adherence, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+##### Exercise Prescription to join #####
+prescription_to_join <- current_exercise_prescription %>%
+  select(week, cf_duration, st_duration, aerobic_duration) %>%
+  pivot_longer(-week) %>%
+  mutate(name = case_when(name == "cf_duration"~ "Yoga",
+                          name == "st_duration" ~ "Weights",
+                          name == "aerobic_duration" ~ "Workout")) %>%
+  filter(!is.na(value)) %>%
+  filter(week <= current$final_week-1)
+
+
+##### Exercise Minutes #####
+current_ex <- clean_all_ex_data %>%
+  filter(comet_study_id == current$comet_study_id) %>%
+  full_join(., prescription_to_join, by = c("week", "activityParentName" = "name")) %>%
+  mutate(final_ex_min = case_when(!is.na(final_ex_min) ~ final_ex_min,
+                                  T ~ -25)) %>%
+  mutate(final_ex_min_source = case_when(!is.na(final_ex_min_source) ~ final_ex_min_source,
+                                  T ~ "Missing")) 
+#Count for number of plots
+#This variable is because I can only show one plot per if statement
+count <- 0
+
+
+if(current$group == 2) {
+  ##### Core and Fusion dataframe and plot #######
+current_toning <-  current_ex %>%
+  filter(activityParentName == "Yoga" | is.na(activityParentName)) 
+  
+current_toning %>%
+  ggplot(., aes(week, value, linetype = "prescription")) +
+  geom_line() +
+  scale_linetype_manual(values = "dashed") +
+  geom_point(data = current_toning, aes(week, final_ex_min, color = final_ex_min_source)) +
+  scale_colour_manual(values = c("Exercise Log" = "#000000","Fitbit" = "#778899" ,"Missing" = "#b20000")) +
+  labs(x = "Week", y = "Weekly Exercise Minutes", title = "Core and Fusion - Exercise Log") +
+  scale_x_continuous(breaks = c(seq(from = 1, to = as.numeric(current$final_week), by = 2))) +
+  ylim(-25,300) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        legend.position = "top",
+        legend.title = element_blank())
+
+} else if (current$group == 3) {
+  ###### Endurance Data frame and plot ######
+current_endurance <-  current_ex %>%
+  filter(activityParentName == "Workout" | is.na(activityParentName))
+  
+current_endurance %>%
+  ggplot(., aes(week, value, linetype = "prescription")) +
+  geom_line() +
+  scale_linetype_manual(values = "dashed") +
+  geom_point(data = current_endurance, aes(week, final_ex_min, color = final_ex_min_source)) +
+  scale_colour_manual(values = c("Exercise Log" = "#000000","Fitbit" = "#778899" ,"Missing" = "#b20000")) +
+  labs(x = "Week", y = "Weekly Exercise Minutes", title = "Endurance - Exercise Log") +
+  scale_x_continuous(breaks = c(seq(from = 1, to = as.numeric(current$final_week), by = 2))) +
+  ylim(-25,300) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        legend.position = "top",
+        legend.title = element_blank())
+} else if (current$group == 4) {
+count <- 2
+
+current_resistance <- current_ex %>%
+  filter(activityParentName == "Weights" | is.na(activityParentName)) %>%
+  mutate(value = case_when(is.na(prescribed_ex_min) ~ 70,
+                                            T ~ value))
+
+plot <- current_resistance %>%
+  ggplot(., aes(week, value, linetype = "prescription")) +
+  geom_line() +
+  scale_linetype_manual(values = "dashed") +
+  geom_point(data = current_resistance, aes(week, final_ex_min, color = final_ex_min_source)) +
+  scale_colour_manual(values = c("Exercise Log" = "#000000","Fitbit" = "#778899" ,"Missing" = "#b20000")) +
+  labs(x = "Week", y = "Weekly Exercise Minutes", title = "Resistance - Exercise Log") +
+  scale_x_continuous(breaks = c(seq(from = 1, to = as.numeric(current$final_week), by = 2))) +
+  ylim(-25,300) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        legend.position = "top",
+        legend.title = element_blank())
+  
+current_toning <-  current_ex %>%
+  filter(activityParentName == "Yoga" | is.na(activityParentName)) %>%
+  mutate(value = case_when(is.na(prescribed_ex_min) ~ 75,
+                                            T ~ value))
+  
+current_toning %>%
+  ggplot(., aes(week, value, linetype = "prescription")) +
+  geom_line() +
+  scale_linetype_manual(values = "dashed") +
+  geom_point(data = current_toning, aes(week, final_ex_min, color = final_ex_min_source)) +
+  scale_colour_manual(values = c("Exercise Log" = "#000000","Fitbit" = "#778899" ,"Missing" = "#b20000")) +
+  labs(x = "Week", y = "Weekly Exercise Minutes", title = "Core and Fusion - Exercise Log") +
+  scale_x_continuous(breaks = c(seq(from = 1, to = as.numeric(current$final_week), by = 2))) +
+  ylim(-25,300) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        legend.position = "top",
+        legend.title = element_blank())
+
+
+} else if (current$group == 5){
+count <- 2
+
+current_resistance <- current_ex %>%
+  filter(activityParentName == "Weights" | is.na(activityParentName)) %>%
+  mutate(value = case_when(is.na(prescribed_ex_min) ~ 70,
+                                            T ~ value))
+
+plot <- current_resistance %>%
+  ggplot(., aes(week, value, linetype = "prescription")) +
+  geom_line() +
+  scale_linetype_manual(values = "dashed") +
+  geom_point(data = current_resistance, aes(week, final_ex_min, color = final_ex_min_source)) +
+  scale_colour_manual(values = c("Exercise Log" = "#000000","Fitbit" = "#778899" ,"Missing" = "#b20000")) +
+  labs(x = "Week", y = "Weekly Exercise Minutes", title = "Resistance - Exercise Log") +
+  scale_x_continuous(breaks = c(seq(from = 1, to = as.numeric(current$final_week), by = 2))) +
+  ylim(-25,300) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        legend.position = "top",
+        legend.title = element_blank())
+
+current_endurance <-  current_ex %>%
+  filter(activityParentName == "Workout" | is.na(activityParentName))
+  
+current_endurance %>%
+  ggplot(., aes(week, value, linetype = "prescription")) +
+  geom_line() +
+  scale_linetype_manual(values = "dashed") +
+  geom_point(data = current_endurance, aes(week, final_ex_min, color = final_ex_min_source)) +
+  scale_colour_manual(values = c("Exercise Log" = "#000000","Fitbit" = "#778899" ,"Missing" = "#b20000")) +
+  labs(x = "Week", y = "Weekly Exercise Minutes", title = "Endurance - Exercise Log") +
+  scale_x_continuous(breaks = c(seq(from = 1, to = as.numeric(current$final_week), by = 2))) +
+  ylim(-25,300) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        legend.position = "top",
+        legend.title = element_blank())
+
+}
+
+if(count == 2) {
+  plot
+}
+
+```
+
+```{r adherence_perf, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis', include=TRUE}
+current_adherence_perf <- performance_based_adherence_temp %>%
+  filter(comet_study_id == current$comet_study_id)
+
+current_adherence_score <- time_based_adherence_temp %>%
+  filter(comet_study_id == current$comet_study_id) %>%
+  left_join(., current_adherence_perf, by = c("comet_study_id","week")) %>%
+  select(-adherence_score_high) %>%
+  pivot_longer(cols = contains("adherence"))
+
+current_adherence_score %>%
+  ggplot(., aes(week, value, color = name)) +
+  geom_point() +
+  scale_colour_manual(values = c("adherence_score_high" = "#D55E00","adherence_score_log" = "#00cc00" ,"adherence_score_performance" = "#56B4E9")) +
+  labs(x = "Week", y = "Weekly Exercise Score", title = "Adherence Score") +
+  scale_x_continuous(breaks = c(seq(from = 1, to = as.numeric(current$final_week), by = 2))) +
+  geom_abline(slope = 0, intercept = 1 , linetype = 3) +
+  ylim(0,3) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        legend.position = "top",
+        legend.title = element_blank())
+
+
+```
+```{r adherence_violin, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis', include=FALSE}
+current_adherence_perf <- performance_based_adherence_temp %>%
+  filter(comet_study_id == current$comet_study_id)
+
+current_adherence_score <- time_based_adherence_temp %>%
+  filter(comet_study_id == current$comet_study_id) %>%
+  left_join(., current_adherence_perf, by = c("comet_study_id","week")) %>%
+  pivot_longer(cols = contains("adherence")) 
+# 
+# perf_id <- performance_based_adherence_temp %>%
+#   mutate(week = factor(random_id)) %>%
+#   select(random_id, week, everything())
+# 
+# perf_long_id <- perf_id %>%
+#   pivot_longer(., -c(week, random_id)) %>%
+#   select(random_id, week, everything())
+# 
+# time_id <- time_based_adherence_temp %>%
+#   mutate(week = factor(random_id)) %>%
+#   select(random_id, week, everything())
+# 
+# time_long_id <- time_id %>%
+#   pivot_longer(., -c(week, random_id)) %>%
+#   select(random_id, week, everything())
+# 
+# combined_id <- rbind(perf_long_id, time_long_id)
+
+ggplot(current_adherence_score, aes(x = factor(name), y = value)) +
+  geom_violin() +
+  stat_summary(fun = mean, geom = "point", size=2, aes(shape = name, color = name),
+               position = position_dodge(width = .75)) +
+  theme_bw() +
+  labs(title = "All Three Approaches by Participant") +
+  ylab("Adherence") +
+  xlab("Random ID") +
+  theme(legend.position = "top",
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank()) +
+  scale_y_continuous(breaks = seq(1:5)) +
+  geom_abline(slope = 0, intercept = 1, linetype = 3) 
+
+
+
+```
+
+
+
+</center><br>
+
+
+### Missing Exercise Log Entries
+<center>
+```{r missing_ex_log, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+##### Clean Log #####
+datatable(missing_current,
+          rownames = F,
+          filter = "top",
+          class = 'cell-border stripe',
+          editable = TRUE, 
+          options = list(columnDefs = 
+                           list(list(className = 'dt-center', 
+                                     targets = "_all"))))
+
+
+```
+
+</center><br>
+
+
+### Exercise Log Issues
+<center>
+```{r ex_log_issues, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+##### Clean Log #####
+issues_current <- ex_log_issues %>%
+  filter(comet_study_id == current$comet_study_id) %>%
+  arrange(log_weeknum, record_id) %>%
+  select(-comet_study_id)
+
+datatable(issues_current,
+          rownames = F,
+          filter = "top",
+          class = 'cell-border stripe',
+          editable = TRUE, 
+          options = list(columnDefs = 
+                           list(list(className = 'dt-center', 
+                                     targets = "_all"))))
+
+
+```
+
+</center><br>
+
+### Exercise Log Summary
+<center>
+```{r redcap_log, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+##### Clean Log #####.
+current_full_log <- exercise_log %>%
+  filter(log_exclude == 0 | is.na(log_exclude)) %>%
+  filter(comet_study_id == current$comet_study_id) %>%
+  arrange(log_weeknum, record_id) 
+
+
+if(current$group == 2) {
+  current_full_log %>%
+    select(record_id, log_today_date, log_weeknum, log_monday, log_st_min, log_supervised_num, log_independent_num) %>%
+    datatable(.,
+              rownames = F,
+              filter = "top",
+              class = 'cell-border stripe',
+              editable = TRUE, 
+              options = list(columnDefs = 
+                               list(list(className = 'dt-center', 
+                                         targets = "_all")),
+                             pageLength = 50))
+
+} else if (current$group == 3) {
+  current_full_log %>%
+    select(record_id, log_today_date, log_weeknum, log_monday, log_aex_min, log_supervised_num, log_independent_num) %>%
+    datatable(.,
+              rownames = F,
+              filter = "top",
+              class = 'cell-border stripe',
+              editable = TRUE, 
+              options = list(columnDefs = 
+                               list(list(className = 'dt-center', 
+                                         targets = "_all")),
+                             pageLength = 50))
+} else if (current$group == 4) {
+  current_full_log %>%
+    select(record_id, log_today_date, log_weeknum, log_monday, log_rt_min, log_st_min, log_supervised_num, log_independent_num) %>%
+    datatable(.,
+              rownames = F,
+              filter = "top",
+              class = 'cell-border stripe',
+              editable = TRUE, 
+              options = list(columnDefs = 
+                               list(list(className = 'dt-center', 
+                                         targets = "_all")),
+                             pageLength = 50))
+} else if (current$group == 5) {
+  current_full_log %>%
+    select(record_id, log_today_date, log_weeknum, log_monday, log_rt_min, log_aex_min, log_supervised_num, log_independent_num) %>%
+    datatable(.,
+              rownames = F,
+              filter = "top",
+              class = 'cell-border stripe',
+              editable = TRUE, 
+              options = list(columnDefs = 
+                               list(list(className = 'dt-center', 
+                                         targets = "_all")),
+                             pageLength = 50))
+}
+
+
+```
+
+</center><br>
+
+
+### Full Exercise Log
+<center>
+```{r full_log, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+##### Clean Log #####.
+full_log <- exercise_log %>%
+  filter(comet_study_id == current$comet_study_id) %>%
+  arrange(log_weeknum, record_id) 
+  # select(record_id, log_weeknum, log_legpress, log_lorow, log_chest, log_hirow, log_hammy, log_bicep, log_tricep, log_squat, log_calf, log_bridge, log_curl) %>%
+  # pivot_longer(cols = -c(record_id, log_weeknum)) %>%
+  # mutate(status = case_when(value == 1 ~ "None",
+  #                           value == 2 ~ "Some",
+  #                           value == 3 ~ "Full",
+  #                           value == 4 ~ "Change Weight")) %>%
+  # pivot_wider(id_cols = c(record_id,log_weeknum), names_from = name, values_from = status) 
+  
+full_log  %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE, 
+            options = list(columnDefs = 
+                             list(list(className = 'dt-center', 
+                                       targets = "_all")),
+                           pageLength = 10,
+                           scrollX = T))
+
+
+
+
+```
+
+</center><br>
+
+
+`r if(current$group >=4){"### Resistance Exercise Changes"}`
+
+
+<center>
+```{r resistance, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis', include=current$group>=4}
+
+##### Clean Log #####.
+resistance <- exercise_log %>%
+  filter(log_exclude == 0 | is.na(log_exclude)) %>%
+  filter(comet_study_id == current$comet_study_id) %>%
+  arrange(log_weeknum, record_id)  %>%
+  select(record_id, log_weeknum, log_legpress, log_lorow, log_chest, log_hirow, log_hammy, log_bicep, log_tricep, log_squat, log_calf, log_bridge, log_curl) %>%
+  filter(!(log_legpress == 3 & log_lorow==3& log_chest==3&  log_hirow==3&  log_hammy==3&  log_bicep==3&  log_tricep==3&  log_squat==3& 
+           log_calf==3&  log_bridge==3&  log_curl==3)) %>%
+  pivot_longer(cols = -c(record_id, log_weeknum)) %>%
+  mutate(status = case_when(value == 1 ~ "None",
+                            value == 2 ~ "Some",
+                            value == 3 ~ "Full",
+                            value == 4 ~ "Change Weight")) %>%
+  pivot_wider(id_cols = c(record_id,log_weeknum), names_from = name, values_from = status) 
+  
+resistance %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE, 
+            options = list(columnDefs = 
+                             list(list(className = 'dt-center', 
+                                       targets = "_all")),
+                           pageLength = 10,
+                           scrollX = T))
+
+
+
+
+```
+</center><br>
+
+### Participant Notes
+<center>
+```{r pt_notes, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+##### Clean Log #####.
+ex_log_notes <- exercise_log %>%
+  filter(comet_study_id == current$comet_study_id) %>%
+  select(record_id, log_today_date, log_monday, log_notes_init, log_ae_description_init) %>%
+  pivot_longer(cols = c(log_notes_init, log_ae_description_init), names_to = "Source", values_to = "Note") %>%
+  filter(Note != "") %>%
+  mutate(Source = case_when(Source == "log_notes_init" ~ "Log Notes",
+                            Source == "log_ae_description_init" ~ "Potential AE")) %>%
+  arrange(record_id) 
+
+ex_log_notes %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE, 
+            options = list(columnDefs = 
+                             list(list(className = 'dt-center', 
+                                       targets = "_all")),
+                           pageLength = 10))
+
+
+
+
+
+
+```
+
+</center><br>
+
+
+
+### Study Staff Notes
+<center>
+```{r study_notes, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+##### Clean Log #####.
+current_note_to_file <- note_to_file %>%
+  filter(redcap_event_name == "safety_and_monitor_arm_1") %>%
+  filter(record_id == current$record_id) %>%
+  select(record_id, ntf_note) %>%
+  mutate(across(everything(), ~ as.character(.))) %>%
+  pivot_longer(cols = c(-record_id))
+
+current_fid_check <- fidelity_check %>%
+  filter(redcap_event_name == "safety_and_monitor_arm_1") %>%
+  filter(record_id == current$record_id) %>%
+  select(record_id, contains("note")) %>%
+  mutate(across(everything(), ~ as.character(.))) %>%
+  pivot_longer(cols = c(-record_id))
+  
+study_notes <- comet %>%
+  filter(record_id == current$record_id) %>%
+  select(record_id, contains("note"), phone_fix_fitbit) %>%
+  mutate(across(everything(), ~ as.character(.))) %>%
+  pivot_longer(cols = c(-record_id)) %>%
+  bind_rows(current_note_to_file) %>%
+  bind_rows(current_fid_check) %>%
+  filter(!is.na(value) & value != "")
+  
+
+study_notes %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE, 
+            options = list(columnDefs = 
+                             list(list(className = 'dt-center', 
+                                       targets = "_all")),
+                           pageLength = 10))
+
+
+
+
+
+
+```
+
+</center><br>
+
+
+
+
+### Fitbit HR and Steps
+
+**Last Transfer:** `r current_fitbit_hr$date[nrow(current_fitbit_hr)]`
+
+<center>
+```{r fitbit_hr_and_steps, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+
+
+
+fitbit <- current_fitbit_activities %>%
+  mutate(duration = duration/60/1000) %>%
+  select(activityParentName, duration, startDate, time_in_zone, time_over_zone, average) 
+  
+
+hr_and_steps <- current_fitbit_hr %>%
+  left_join(., current_fitbit_steps, by = c("date","comet_study_id")) %>%
+  rename("Minutes Above 40% HRR" = ex_iterative) %>%
+  mutate(week = ceiling( as.numeric((date - current$comet_interventionstart + 1) / 7))) %>%
+  select(-comet_study_id, -ex_averaging) 
+  
+
+
+hr_and_steps %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE, 
+            options = list(columnDefs = 
+                             list(list(className = 'dt-center', 
+                                       targets = "_all")),
+                           pageLength = 10))
+
+
+
+
+
+
+```
+
+</center><br>
+
+
+
+
+
+### Fitbit Activities
+
+<center>
+```{r activities, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+fitbit_activities <- current_fitbit_activities %>%
+  mutate(duration = duration/60/1000) %>%
+  mutate(week = ceiling( as.numeric((startDate - current$comet_interventionstart + 1) / 7))) %>%
+  select(startDate, week, activityParentName, duration,  time_in_zone, time_over_zone, average) 
+  
+
+fitbit_activities %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE, 
+            options = list(columnDefs = 
+                             list(list(className = 'dt-center', 
+                                       targets = "_all")),
+                           pageLength = 10))
+
+
+
+
+
+
+```
+
+</center><br>
+
+
+
+
+
+
+### Fitbit Notifications
+<center>
+```{r fitbit_notifications, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+##### Fitbit Texts #####.
+fitbit_notifications <- text_notification_log %>%
+  filter(comet_study_id == current$comet_study_id)
+
+fitbit_notifications %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE, 
+            options = list(columnDefs = 
+                             list(list(className = 'dt-center', 
+                                       targets = "_all")),
+                           pageLength = 50))
+
+
+
+
+
+
+```
+
+</center><br>
+
+
+
+
+
+### Adverse Events
+<center>
+```{r aes, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+##### Clean Log #####
+adverse_events_current <- aes %>%
+  filter(`Study ID` == current$comet_study_id)
+
+datatable(adverse_events_current,
+          rownames = F,
+          filter = "top",
+          class = 'cell-border stripe',
+          editable = TRUE, 
+          options = list(columnDefs = 
+                           list(list(className = 'dt-center', 
+                                     targets = "_all"))))
+
+
+```
+
+</center><br>
+
+
+
+### Fidelity Checks
+<center>
+```{r fid_check, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+##### Clean Log #####
+fid_check_current <- fidelity_check %>% 
+  filter(redcap_repeat_instrument == "intervention_fidelity_check") %>%
+  filter(record_id == current$record_id)
+
+datatable(fid_check_current,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE, 
+            options = list(columnDefs = 
+                             list(list(className = 'dt-center', 
+                                       targets = "_all")),
+                           pageLength = 10,
+                           scrollX = T))
+
+
+```
+
+</center><br>
+
+
+
+
+### Post Study Data Sheet
+<center>
+```{r post_data, echo=FALSE, messages=FALSE, fig.keep='all', fig.show='asis'}
+
+max_chest <- current %>%
+  select(contains("rm_chest_weight")) %>%
+  pivot_longer(everything()) %>%
+  pull(value) %>%
+  max(., na.rm = T)
+
+max_leg <- current %>%
+  select(contains("rm_leg_weight")) %>%
+  pivot_longer(everything()) %>%
+  pull(value) %>%
+  max(., na.rm = T)
+
+max_sit_reach <- current %>%
+  select(ex_sft_sit_reach1,ex_sft_sit_reach2) %>%
+  pivot_longer(everything()) %>%
+  pull(value) %>%
+  max(., na.rm = T)
+
+max_back_scratch <- current %>%
+  select(ex_sft_back_scr1, ex_sft_back_scr2) %>%
+  pivot_longer(everything()) %>%
+  pull(value) %>%
+  max(., na.rm = T)
+
+min_8ft <- current %>%
+  select(ex_sft_8ft_up_go1, ex_sft_8ft_up_go2) %>%
+  pivot_longer(everything()) %>%
+  pull(value) %>%
+  min(., na.rm = T)
+  
+vo2 <- vo2_summary_measures %>%
+  filter(as.numeric(ID) == current$comet_study_id) %>%
+  filter(TP == "baseline_arm_1") %>%
+  pull(peakVO2mlkgmin)
+
+post_data <- current %>%
+  bind_cols(vo2 = vo2, 
+            max_chest = max_chest, 
+            max_leg = max_leg, 
+            max_sit_reach = max_sit_reach, 
+            max_back_scratch = max_back_scratch, 
+            min_8ft = min_8ft) %>%
+  select(ex_ht, ex_mass, ex_rest_sbp, ex_rest_dbp, ex_rest_hr, vo2, ex_gxt_maxhr, max_chest, max_leg, ex_sft_6mw_yds, ex_sft_30s_chair, ex_sft_arm_curls,
+         max_sit_reach, max_back_scratch, min_8ft) %>%
+  pivot_longer(everything(), names_to = "Measure", values_to = "Value") %>%
+  mutate(Measure = case_when(Measure == "ex_ht" ~ "Height (cm)",
+                             Measure == "ex_mass" ~ "Weight (kg)",
+                             Measure == "ex_rest_sbp" ~ "Systolic BP",
+                             Measure == "ex_rest_dbp" ~ "Diastolic BP",
+                             Measure == "ex_rest_hr" ~ "Resting HR",
+                             Measure == "vo2" ~ "VO2 Peak ml/kg/min",
+                             Measure == "ex_gxt_maxhr" ~ "Max HR",
+                             Measure == "max_chest" ~ "Chest Press 1RM",
+                             Measure == "max_leg" ~ "Leg Press 1RM",
+                             Measure == "ex_sft_6mw_yds" ~ "6-Minute Walk (yds)",
+                             Measure == "ex_sft_30s_chair" ~ "Chair Stands",
+                             Measure == "ex_sft_arm_curls" ~ "Bicep Curls",
+                             Measure == "max_sit_reach" ~ "Chair Sit & Reach (in)",
+                             Measure == "max_back_scratch" ~ "Back Scratch (in)",
+                             Measure == "min_8ft" ~ "8ft Up & Go"))
+  
+
+
+
+    post_data %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>%
+      htmlTable(.,
+                rnames = F,
+      )
+
+
+
+```
+
+</center><br>
+
+
+
+

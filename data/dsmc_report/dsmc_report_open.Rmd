@@ -1,0 +1,2281 @@
+---
+title: "Differential Effects of Exercise Modality on Cognition and Brain in Older Adults (COMET)"
+author: "Eric Vidoni, PT, Ph.D. and Amanda N Szabo-Reed, Ph.D."
+output:
+  word_document:
+    toc: TRUE
+    reference_docx: style_template.docx
+---
+
+```{r setup, include=FALSE}
+##### Declare Libraries #####
+library(rio)
+library(httr)
+library(lubridate)
+library(tidyverse)
+library(htmlTable)
+library(R.utils)
+library(gtools)
+library(flextable)
+library(gtsummary)
+#library(consort)
+#library(webshot2)
+
+  ##### Build Directories #####
+  if(Sys.info()["nodename"]=="workstation_2" & Sys.info()["user"]=="user2"){  #This is Eric's work desktop Mac
+    root_p <- file.path("","drives","university_drive2")
+    root_server_dir <- file.path(root_p,"study_dir_a")
+    python_cmd_prefix <- "python "
+  } else if(Sys.info()["nodename"]=="workstation_1" & Sys.info()["user"]=="study_coordinator_2") {
+    root_p <- file.path("drive")
+    root_server_dir <- file.path(root_p,"study_dir_a")
+    python_cmd_prefix <- "py "
+  } else if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+    root_p <- ""
+    root_server_dir <- file.path(root_p,"ADC_Data")
+    python_cmd_prefix <- "python "
+  } else if(Sys.info()["nodename"]=="workstation_4" & Sys.info()["user"]=="user2"){  #This is eric's personal laptop
+    root_p <- file.path("Z:")
+    root_server_dir <- file.path(root_p,"study_dir_a")
+    python_cmd_prefix <- "py "
+  }
+  
+  message(paste0("Node is ",Sys.info()["nodename"],". Using ", root_server_dir, ' as the root of the directory structure.'))
+  
+  if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+    external_data_dir <- file.path('','kumc-data01','protected','study_dir_a','RAWDATA') 
+  } else {
+    external_data_dir <- file.path(root_p,'study_dir_a','RAWDATA')
+  }
+  project_dir <- file.path(root_server_dir,'study_dir_a','COMET') #project level directory
+  script_dir <- file.path(project_dir,'R')
+  data_dir <- file.path(project_dir,'data')
+  
+  
+  #Identify the ultimate location for copies of the files we can use to read data
+  cog_destination <- file.path(data_dir,'raw','cog_data')
+  dxa_destination <- file.path(data_dir,'raw','dxa_data')
+  clean_data_destination <- file.path(data_dir,'clean')
+  
+  ###### Load Data #####
+  load(file.path(data_dir,'clean','comet_clean.Rdata'))
+  load(file.path(data_dir,'clean','ex_min_clean.Rdata'))
+  load(file.path(data_dir,'clean','adherence.Rdata'))
+  
+  ##### Load Saved Data - comment out when not using ####
+  load(file.path(data_dir,'clean','comet_clean.Rdata'))
+  load(file.path(data_dir,'clean','ex_min_clean.Rdata'))
+  load(file.path(data_dir,'clean','adherence.Rdata'))
+  
+  ###.Rdata Info####
+  data_date <- file.info(file.path(data_dir,'clean','comet_clean.Rdata')) %>%
+    select(mtime) %>%
+    mutate(mtime = format(mtime - days(1), '%b. %d, %Y')) %>%
+    pull()
+    
+  
+  ##### COMET database (test entry removed) ######
+  comet_scienctist_markdown <- comet %>%
+    filter(record_id != 0) %>%
+    filter(redcap_event_name == "baseline_arm_1") %>%
+    mutate(Status = case_when(intervention_status == 1 ~ "Actively on intervention",
+                              intervention_status == 2 ~ "Successfully completed",
+                              intervention_status == 3 ~ "Withdrawn willing to complete testing",
+                              intervention_status == 4 ~ "Withdrawn unwilling to complete testing",
+                              intervention_status == 5 ~ "Lost to Follow-up",
+                              intervention_status == 6 ~ "Terminated Early")) %>%
+    mutate(race_ethnicity = case_when(ethnicity == "Hispanic or Latino" & (race == "White" | race == "None of these fully describe me") ~ "Hispanic or Latino", 
+                                      T ~ race ))
+  
+  
+  ###### import ctcae categories and terms #######
+  ctcae_categories <- import(file.path(data_dir,'dsmc_report','CTCAE_v5.0_categories.xlsx'))
+  ctcae_terms <- import(file.path(data_dir,'dsmc_report','CTCAE_v5.0_terms.xlsx'))
+  
+  #### Adverse Event and EOI Databases ######
+  adverse_event_dsmc <- adverse_event %>%
+    filter(ae_eoi == 0) %>%
+    mutate(Related = case_when(ae_is_study_related == 0 ~ "Not Related",
+                               ae_is_study_related == 2 ~ "Possibly Related",
+                               ae_is_study_related == 1 ~ "Definitely Related")) %>%
+    left_join(., ctcae_categories, by = c("ae_ctcae_category" = "ctcae_identifier")) %>%
+    left_join(., ctcae_terms, by = c("ae_ctcae_term" = "ctcae_term_identifier")) %>%
+    mutate("SOC and Preferred Term" = case_when(!grepl("Other", ctcae_term) ~ paste(ctcae_category,"-",ctcae_term),
+                                                        TRUE ~ ctcae_term)) %>%
+    mutate(Outcome = case_when(ae_outcome == 1 ~ "Recovered, without treatment",
+                               ae_outcome == 2 ~ "Recovered, with treatment",
+                               ae_outcome == 3 ~ "Still Present, no treatment",
+                               ae_outcome == 4 ~ "Still Present, being treated",
+                               ae_outcome == 5 ~ "Residual effect(s) present - no treatment",
+                               ae_outcome == 6 ~ "Residual effect(s) present- being treated",
+                               ae_outcome == 7 ~ "Subject died")) %>%
+    mutate(Serious = case_when(ae_was_ae_serious == 0 ~ "No",
+                               ae_was_ae_serious == 1 ~ "Yes")) %>%
+    mutate(Severity = case_when(ae_grade == 1 ~ "Grade 1; Mild",
+                                ae_grade == 2 ~ "Grade 2; Moderate",
+                                ae_grade == 3 ~ "Grade 3; Severe",
+                                ae_grade == 4 ~ "Grade 4; Life Threatening",
+                                ae_grade == 5 ~ "Grade 5; Death related to AE")) 
+
+  
+  eoi_dsmc <- adverse_event %>%
+    filter(ae_eoi == 1) %>%
+    mutate(Related = case_when(ae_is_study_related == 0 ~ "Not Related",
+                               ae_is_study_related == 2 ~ "Possibly Related",
+                               ae_is_study_related == 1 ~ "Definitely Related")) %>%
+    left_join(., ctcae_categories, by = c("ae_ctcae_category" = "ctcae_identifier")) %>%
+    left_join(., ctcae_terms, by = c("ae_ctcae_term" = "ctcae_term_identifier")) %>%
+    mutate("SOC and Preferred Term" = case_when(!grepl("Other", ctcae_term) ~ paste(ctcae_category,"-",ctcae_term),
+                                                        TRUE ~ ctcae_term)) %>%
+    mutate(Outcome = case_when(ae_outcome == 1 ~ "Recovered, without treatment",
+                               ae_outcome == 2 ~ "Recovered, with treatment",
+                               ae_outcome == 3 ~ "Still Present, no treatment",
+                               ae_outcome == 4 ~ "Still Present, being treated",
+                               ae_outcome == 5 ~ "Residual effect(s) present - no treatment",
+                               ae_outcome == 6 ~ "Residual effect(s) present- being treated",
+                               ae_outcome == 7 ~ "Subject died")) %>%
+    mutate(Serious = case_when(ae_was_ae_serious == 0 ~ "No",
+                               ae_was_ae_serious == 1 ~ "Yes")) %>%
+    mutate(Severity = case_when(ae_grade == 1 ~ "Grade 1; Mild",
+                                ae_grade == 2 ~ "Grade 2; Moderate",
+                                ae_grade == 3 ~ "Grade 3; Severe",
+                                ae_grade == 4 ~ "Grade 4; Life Threatening",
+                                ae_grade == 5 ~ "Grade 5; Death related to AE")) 
+  
+  ###### Load Personal Trainer Database #######
+  trainer_db <- import(file.path(data_dir,'ymca_liason_email','PHITPersonalTrainers.csv'))
+
+  trainer_db_date <- file.info(file.path(data_dir,'ymca_liason_email','PHITPersonalTrainers.csv')) %>%
+    mutate(date = format(mtime, format = "%m/%d/%y")) %>%
+    pull(date)
+  
+  ###### Load Personal Trainer List #####
+  trainer_list <- import(file.path(data_dir,'ymca_liason_email','PHITPersonalTrainers.csv')) %>%
+    filter(is.na(redcap_repeat_instance)) %>%
+    select(record_id, first_name, last_name, work_email, trainer_status, organization, location_y)
+  
+
+  
+  ##### import recruitment projections ####
+  recruitment_projection <- import(file.path(data_dir,'scientist_email','recruitment_projection.xlsx')) %>%
+    mutate(week = week(ymd(Date)), year = year(ymd(Date)))
+  
+  #### Import Data Dictionary #####
+  data_dictionary <- import(file.path(data_dir,'data_dictionary','COMETDifferentialEffectsOfExer_DataDictionary.csv'))
+  
+  ##### Source consort diagram to use throughout document ####
+  source(file.path(data_dir,'dsmc_report','dsmc_consort_generator_open.R'))
+  
+  ###### Date as of Report ####
+  date_as_of <- data_date
+  
+  ###### Last Report ######
+  date_of_last_report <- ymd('2023-02-08')
+  
+  
+
+  
+  # ####### Temp Upload #######
+  # comet_download <- import("C:/Users/study_coordinator_2/Downloads/COMET_1.12.2022.csv") %>%
+  #   mutate(presentweeknum = case_when(is.na(comet_interventionstart) == F ~ floor((as_date(today()) - ymd(comet_interventionstart))/7)+1,
+  #                                     is.na(comet_interventionstart) == T & is.na(randomization_date)==F ~ 0)) %>%
+  #   mutate(age = floor(lubridate::time_length(difftime(ymd(randomization_date), ymd(scrn_dob)), "years"))) %>%
+  #   mutate(group = coalesce(group_assign, group_assign_dyad2nd)) %>%
+  #   filter(record_id != 8) %>% #remove Dreu's test MRI
+  #   filter(record_id != 0) %>% #remove test gxt and fitibit function
+  #   mutate(scrn_race___1 = 1*scrn_race___1) %>%
+  #   mutate(scrn_race___2 = 2*scrn_race___2) %>%
+  #   mutate(scrn_race___4 = 4*scrn_race___4) %>%
+  #   mutate(scrn_race___8 = 8*scrn_race___8) %>%
+  #   mutate(scrn_race___16 = 16*scrn_race___16) %>%
+  #   mutate(scrn_race___32 = 32*scrn_race___32) %>%
+  #   mutate(scrn_race___64 = 64*scrn_race___64) %>%
+  #   mutate(scrn_race___256 = 256*scrn_race___256) %>%
+  #   mutate(race_added = (scrn_race___1 + scrn_race___2 + scrn_race___4 + scrn_race___8 + scrn_race___16 + scrn_race___32 + scrn_race___64 + scrn_race___256)) %>%
+  #   mutate(race = case_when(race_added == 0 ~ "NA",
+  #                           race_added == 1 ~ "White",
+  #                           race_added == 2 ~ "Black, African American, or African",
+  #                           race_added == 4 ~ "Asian",
+  #                           race_added == 8 ~ "American Indian or Alaska Native",
+  #                           race_added == 16 ~ "Native Hawaiian or Other Pacific Islanders",
+  #                           race_added == 32 ~ "None of these fully describe me",
+  #                           race_added == 64 ~ "Prefer not to answer",
+  #                           race_added == 256 ~ "Middle Eastern or North African",
+  #                           TRUE ~ "Other - need to update")) %>%
+  #   mutate(gender = case_when(scrn_gender == 1 ~ "Man",
+  #                             scrn_gender == 2 ~ "Woman",
+  #                             TRUE ~ "Other - need to update")) %>%
+  #   mutate(ethnicity  = dplyr::recode(scrn_ethn,
+  #                                     `2` = "Hispanic or Latino",
+  #                                     `1` = "Not Hispanic or Latino",
+  #                                     `-1`= "Refused",
+  #                                     .default = "Other - need to update"))
+  
+```
+
+\newpage
+
+# Report Summary
+
+\newpage
+
+# Protocol Synopsis
+
+Participants undergo baseline cognitive and exercise testing, phlebotomy, and brain imaging. They are randomized to one of four treatment arms. They exercise according to an individualized, progressive, prescription at a community exercise center. At Week 26, they return for cognitive testing. At Week 52, they return for the same testing as at baseline.
+
+\newline
+
+## Project Organizational Chart, Personnel
+
+```{r org_chart, echo=FALSE, warning=FALSE, message=FALSE}
+
+org_chart <- import(file.path(data_dir,'dsmc_report','org_chart.xlsx')) %>%
+  arrange(Roles)
+
+flextable(org_chart) %>%
+  theme_box(.) %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+```
+
+\newpage
+
+## Brief Statement of Purpose of Trial
+
+The purpose of this study is to test the combined and independent effects of aerobic and resistance training on:
+
+1)  cognitive performance
+2)  regional brain volume
+3)  cardiorespiratory fitness and strength
+4)  fluid biomarkers
+
+The study is registered as NCT04848038, <https://clinicaltrials.gov/ct2/show/NCT04848038>
+
+\newline
+
+## Projected Timetable and Schedule
+
+```{r project_timetable, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+knitr::include_graphics(file.path(data_dir,'dsmc_report','project_timeline.png'), dpi = 6.25) 
+
+
+```
+
+\newpage
+
+# Narrative / Trial Summary
+
+\newpage
+
+## Study Status
+
+The study opened for enrollment on 2021-08-14. The first participant was randomized on 2021-10-14.
+
+\newline
+
+## Summary of Past DSMB Meetings
+
+2021-07-22: First DSMC meeting. The study protocol was discussed. DSMC recommendations based on the meeting were received 2022-07-26, incorporated into the protocol, and approved by the local IRB on 2022-08-10.
+
+\newline
+
+### Action Items
+
+2021-07-22: DSMC requested changes to the protocol and meeting logistics rule adoption. The DSMC adopted the modifications proposed by the study team on 2021-08-02.
+
+\newline
+
+### Resolution of Action Items
+
+\newline
+
+## Summary of Protocol Changes
+
+2021-08-10: IRB approval of protocol. Revisions from grant application included DSMC request for 7 changes to the original protocol.
+
+1.  greater intervention oversight
+2.  recording PI interactions with the intervention and personal trainers
+3.  use of standard factor analysis for the cognitive measures as originally proposed
+4.  AE reporting schedule
+5.  Recording Events of Interest during baseline testing
+6.  DSMC meeting logistics
+7.  DSMC agenda
+
+The study team requested additional consideration of two protocol revisions on 2021-07-30. These requests were approved by the DSMC via email on 2021-08-02 and incorporated into the protocol modification request approved by the IRB on 2021-08-10.
+
+1.  Inclusion of a mock consenting procedure for quality control and training purposes only.
+2.  Clarification on an AE based stopping rule at 50% enrollment.
+
+2021-12-21: IRB approval of protocol modification. Study team requested DSMC approval of 2 revisions to the protocol via email.
+
+1.  Clarification on exclusion criterion related to disorders likely to impact cognition.
+2.  Travel support for visits at KUMC.
+
+The study team received IRB approval for the changes 2021-11-28.
+
+\newpage
+
+# Recruitment and Participant Status: Figures and Tables
+
+\newpage
+
+## Figure 1a: Screening Consort Diagram
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+Recruitment start date: Sept 09, 2021
+
+```{r consorta, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+
+knitr::include_graphics(file.path(data_dir,'dsmc_report','open_consort_screen.png'), dpi = 6.92) 
+
+```
+
+\newpage
+
+## Figure 1b: Enrollment Consort Diagram
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+Recruitment start date: Sept 09, 2021
+
+```{r consortb, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+
+knitr::include_graphics(file.path(data_dir,'dsmc_report','open_consort_enrolled.png'), dpi = 6.92) 
+
+```
+
+\newpage
+
+## Figure 2: Enrollment: Actual vs. Expected
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r recruitment_graph, echo=FALSE, warning=FALSE, message=FALSE}
+
+######Dataframe on enrollment targets ###### 
+target <- recruitment_projection %>%
+  mutate(week = isoweek(Date), year = isoyear(Date)) %>%
+  select(week, year, `Enrollment Goal by Week`, Date) %>%
+  arrange(year, week) %>%
+  mutate(`Enrollment Target` = cumsum(`Enrollment Goal by Week`),
+         `Screening Target` = round(`Enrollment Target` *3,0))
+
+
+###### Dataframe on enrollment ###### 
+enrolled <- comet %>%
+  select(-group_assign) %>%
+  mutate(week = isoweek(randomization_date), year = year(randomization_date)) %>%
+  arrange(year, week) %>%
+  group_by(week, year) %>%
+  count() %>%
+  ungroup() %>%
+  filter(!is.na(year)) %>%
+  as_tibble(.) %>%
+  arrange(year, week) %>%
+  mutate(Enrolled = cumsum(n))
+
+###### Graph parameters for milestones #####
+ms_pct <- c(25,50,75,100)
+params <- data.frame(ms_pct,
+                     milestone = 280*(ms_pct/100),
+                     milestone_screen = 3*280*(ms_pct/100),
+                     xend = as.POSIXct(c(rep(NA,4))),
+                     xend2 = as.POSIXct(c(rep(NA,4))))
+
+for(i in 1:nrow(params)){
+  params$xend[i]  <- target$Date[which.max(target$`Enrollment Target` >= params$milestone[i])]
+  params$xend2[i] <- target$Date[which.max(target$`Screening Target` >= params$milestone_screen[i])]
+}
+
+###### Graph of Enrollment #####
+enrollment_projection <- left_join(target, enrolled) %>%
+  select(week, year, Enrolled, `Enrollment Target`, Date) %>%
+  filter(Date > "2021-09-27" & Date < "2025-03-31") %>%
+  pivot_longer(., cols=-c(week,year, Date)) %>%
+  arrange(name, Date) %>%
+  rename(., Accrual = 'name',
+         Counts = 'value') %>%
+  filter(!is.na(Counts)) %>%
+  as_tibble() %>%
+  ggplot() +
+  geom_line(aes(y=Counts, x=Date, group=Accrual, linetype=Accrual, col = Accrual), lwd = 1.5) +
+  scale_linetype_manual(values=c("solid",'longdash')) +
+  scale_color_manual(values=c("black","gray")) +
+  scale_y_continuous(limits = c(0, 300), breaks=seq(0,300,50), expand = c(0, 0)) +
+  geom_segment(aes(x=as.POSIXct("2021-10-04"), xend=params$xend[1], y=params$milestone[1], yend=params$milestone[1]), linetype="solid", color = "gray", size=.5) +
+  annotate("text", x=as.POSIXct("2022-02-06"), y=params$milestone[1]+5, label=paste0(params$ms_pct[1],"% Enrollment Milestone"), color="black", size=4) +
+  geom_segment(aes(x=as.POSIXct("2021-10-04"), xend=params$xend[2], y=params$milestone[2], yend=params$milestone[2]), linetype="solid", color = "gray", size=.5) +
+  annotate("text", x=as.POSIXct("2022-02-06"), y=params$milestone[2]+5, label=paste0(params$ms_pct[2],"% Enrollment Milestone"), color="black", size=4) +
+  geom_segment(aes(x=as.POSIXct("2021-10-04"), xend=params$xend[3], y=params$milestone[3], yend=params$milestone[3]), linetype="solid", color = "gray", size=.5) +
+  annotate("text", x=as.POSIXct("2022-02-06"), y=params$milestone[3]+5, label=paste0(params$ms_pct[3],"% Enrollment Milestone"), color="black", size=4) +
+  geom_segment(aes(x=as.POSIXct("2021-10-04"), xend=params$xend[4], y=params$milestone[4], yend=params$milestone[4]), linetype="solid", color = "gray", size=.5) +
+  annotate("text", x=as.POSIXct("2022-02-06"), y=params$milestone[4]+5, label=paste0(params$ms_pct[4],"% Enrollment Milestone"), color="black", size=4) +
+  ggtitle("COMET Enrollment Progress") +
+  ylab("Cumulative Randomizations") +
+  xlab("Year") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.85, .1),
+        legend.title = element_blank()) 
+
+ggsave(file.path(data_dir,'dsmc_report','enrollment_projection.png'), enrollment_projection, scale = 1.1,width = 7, height = 4, units = "in")
+
+
+
+###### Dataframe on enrollment ###### 
+
+ph_screen <- phone_screening %>%
+  mutate(week = isoweek(scrn_date), year = year(scrn_date)) %>%
+  arrange(year, week) %>%
+  group_by(week, year) %>%
+  count() %>%
+  ungroup() %>%
+  filter(!is.na(year)) %>%
+  as_tibble(.) %>%
+  arrange(year, week) %>%
+  mutate(Screened = cumsum(n))
+
+###### Graph of Phone Screens #####
+screen_projection <- left_join(target, ph_screen) %>%
+  select(week, year, Screened, `Screening Target`, Date) %>%
+  filter(Date > "2021-09-27" & Date < "2025-03-31") %>%
+  pivot_longer(., cols=-c(week,year, Date)) %>%
+  arrange(name, Date) %>%
+  rename(., Accrual = 'name',
+         Counts = 'value') %>%
+  filter(!is.na(Counts)) %>%
+  as_tibble() %>%
+  ggplot() +
+  geom_line(aes(y=Counts, x=Date, group=Accrual, linetype=Accrual, col = Accrual), lwd = 1.5) +
+  scale_linetype_manual(values=c("solid",'longdash')) +
+  scale_color_manual(values=c("black","gray")) +
+  scale_y_continuous(limits = c(0, 900), breaks=seq(0,900,100), expand = c(0, 0)) +
+  geom_segment(aes(x=as.POSIXct("2021-10-04"), xend=params$xend[1], y=params$milestone_screen[1], yend=params$milestone_screen[1]), linetype="solid", color = "gray", size=.5) +
+  annotate("text", x=as.POSIXct("2022-02-06"), y=params$milestone_screen[1]+10, label=paste0(params$ms_pct[1],"% Screening Milestone"), color="black", size=3.75) +
+  geom_segment(aes(x=as.POSIXct("2021-10-04"), xend=params$xend[2], y=params$milestone_screen[2], yend=params$milestone_screen[2]), linetype="solid", color = "gray", size=.5) +
+  annotate("text", x=as.POSIXct("2022-02-06"), y=params$milestone_screen[2]+10, label=paste0(params$ms_pct[2],"% Screening Milestone"), color="black", size=3.75) +
+  geom_segment(aes(x=as.POSIXct("2021-10-04"), xend=params$xend[3], y=params$milestone_screen[3], yend=params$milestone_screen[3]), linetype="solid", color = "gray", size=.5) +
+  annotate("text", x=as.POSIXct("2022-02-06"), y=params$milestone_screen[3]+10, label=paste0(params$ms_pct[3],"% Screening Milestone"), color="black", size=3.75) +
+  geom_segment(aes(x=as.POSIXct("2021-10-04"), xend=params$xend[4], y=params$milestone_screen[4], yend=params$milestone_screen[4]), linetype="solid", color = "gray", size=.5) +
+  annotate("text", x=as.POSIXct("2022-02-06"), y=params$milestone_screen[4]+10, label=paste0(params$ms_pct[4],"% Screening Milestone"), color="black", size=3.75) +
+  annotate("text",x=as.POSIXct("2024-12-01"), y=250, label="Assumes 3:1\nScreening Requirement") +
+  ggtitle("COMET Phone Screening Progress") +
+  ylab("Cumulative Phone Screening Performed") +
+  xlab("Year") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.89, .1),
+        legend.title = element_blank()) 
+
+ggsave(file.path(data_dir,'dsmc_report','screen_projection.png'), screen_projection, scale = 1.1,width = 7, height = 4, units = "in")
+
+### load graphs
+knitr::include_graphics(file.path(data_dir,'dsmc_report','screen_projection.png'), dpi = 7) 
+knitr::include_graphics(file.path(data_dir,'dsmc_report','enrollment_projection.png'), dpi = 7) 
+
+
+
+```
+
+\newpage
+
+## Table 1: Participant Enrollment Status
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_1, echo=FALSE, warning=FALSE, message=FALSE}
+#all of these numbers are calculated in dsmc_consort_generator_open.R
+#Code was updated to pull from dsmc_consort_generator on 7/5/22
+
+enrolled <- nrow(randomized)
+preint <- nrow(randomized %>% filter(is.na(intervention_status)))
+active <- nrow(randomized %>% filter(intervention_status == 1))
+completed_num <- nrow(completed)
+withdrawn_but_willing <- nrow(withdrawn_testing)
+withdrawn_not_willing <- nrow(withdrawn_no_testing)
+lost_to_followup <- nrow(lost)
+
+table_1 <- data.frame(Status = c("Pre-Intervention", "Active", "Completed", "Discontinued Treatment/Follow-up Continued", "Discontinued from Study", "Lost to Follow-up"), 
+                      N = c(preint, active, completed_num, withdrawn_but_willing, withdrawn_not_willing, lost_to_followup)) %>%
+  mutate(Percent = scales::percent(N/enrolled, accuracy = 1))
+
+table_1 %>% 
+  flextable() %>% 
+  add_header_lines(., paste0("Participant Enrollment Status (N = ",enrolled,")")) %>%
+  autofit() %>%
+  theme_booktabs()
+
+
+
+```
+
+### Reasons for Intervention Discontinuation
+
+```{r withdraw_rsn, echo=FALSE, warning=FALSE, message=FALSE}
+#all of these numbers are calculated in dsmc_consort_generator_open.R
+#Code was updated to pull from dsmc_consort_generator on 7/5/22
+
+reasons <- withdrawn_testing %>%
+  bind_rows(., withdrawn_no_testing) %>%
+  mutate(Reason = case_when(withdraw_rsn == 1 ~ "Injury",
+                            withdraw_rsn == 2 ~ "Illness",
+                            withdraw_rsn == 3 ~ "Time",
+                            withdraw_rsn == 4 ~ "Dissatisfaction",
+                            withdraw_rsn == 5 ~ "Death",
+                            withdraw_rsn == 6 ~ "Other",
+                            withdraw_rsn == 7 & withdraw_rsn_admin == 1 ~ "MCI diagnosis")) %>%
+  select(Reason)
+
+gtsummary::tbl_summary(reasons) %>%
+  modify_header(label = " ") %>%
+  as_flex_table() %>%
+  align(align = "center", part = "header") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+```
+
+\newpage
+
+## Table 2: Reasons for Screen Failures
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+### Phone-screen Screen Fails: By Race and Ethnicity
+
+```{r table_2a, echo=FALSE, warning=FALSE, message=FALSE}
+
+#### Screen Fail Pre Consent #####
+screen_fail_reason_pre_consent <- screen_failed %>%
+  mutate(age_inelig = case_when(scrn_age >= 81 ~ 1,
+                                TRUE ~ 0)) %>%
+  mutate(tics_inelig = case_when(scrn_tics_score <= 25 ~ 1,
+                                 TRUE ~ 0)) %>%
+  mutate(scrn_reschedule = case_when(scrn_reschedule == 1 ~ 0,
+                                     scrn_reschedule == 2 ~ 1)) %>%
+  mutate(scrn_drop_reason = as.numeric(scrn_drop_reason)) %>%
+  mutate(race_ethnicity = case_when(race_added == 3 ~ "Black, African American, or African",
+                                    race_added == 20 ~ "Native Hawaiian or Other Pacific Islanders",
+                                    T ~ race_ethnicity)) %>%
+  mutate(`Reason` = case_when(age_inelig == 1 ~ "Age",
+                              tics_inelig == 1 ~ "TICS < 25",
+                              scrn_reschedule == 1 ~ "Not Interested - No Reason",
+                              scrn_drop_reason == 1 ~ "Too Busy",
+                              scrn_drop_reason == 2 ~ "Distance to Study Activities",
+                              scrn_drop_reason == 3 ~ "Discomfort with Procedures",
+                              scrn_drop_reason == 4 ~ "Disinterest in Study Premise",
+                              scrn_drop_reason == 6 | scrn_drop_reason == 8 ~ "Health Concerns - Personal",
+                              scrn_drop_reason == 7 ~ "Health Concerns - Family",
+                              scrn_drop_reason == 9 ~ "COVID Concerns",
+                              scrn_drop_reason == 10 ~ "Lost to follow-up",
+                              scrn_drop_reason == 5 ~ "Other",
+                              scrn_en_fluence == 1 ~ "Not English Speaking",
+                              scrn_out == 1 ~ "Travel more than 4 weeks",
+                              scrn_transport == 1 ~ "Reliable Transport",
+                              scrn_joint_pain == 1 ~ "Joint Pain",
+                              scrn_phy_move_free == 1 ~ "Assistive Walking Device",
+                              scrn_overhead == 1 ~ "Joint Pain",
+                              scrn_mri_attempt == 1 ~ "MRI Attempt",
+                              scrn_mri_implant == 1 ~ "MRI Eligibility",
+                              scrn_mri_metal == 1 ~ "MRI Eligibility",
+                              scrn_med_subst == 1 ~ "Substance Abuse",
+                              scrn_cancer_treat == 1 ~ "Cancer",
+                              scrn_med_diab == 1 ~ "Insulin",
+                              scrn_heart_treat == 1 ~ "Cardiac Issue",
+                              scrn_med_neuro == 1 ~ "Neurological Issue",
+                              scrn_htn_treat_ch == 1 ~ "Blood Pressure Meds",
+                              scrn_rapamod == 1 ~ "Too Active",
+                              scrn_rapavig == 1 ~ "Too Active",
+                              scrn_rapa_st == 1 ~ "Too Active",
+                              scrn_pcp_clear_response == 1 ~ "No Physician Clearance")) %>%
+  select(Reason, race_ethnicity)
+
+
+gtsummary::tbl_summary(screen_fail_reason_pre_consent, by = race_ethnicity) %>%
+  modify_header(label ~ " ") %>%
+  add_overall() %>%
+  as_flex_table() %>%
+  fontsize(., size = 9, part = "all") %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines("Phone-screen Screen Fails") %>%
+  add_footer_lines("n - Number of listed screen-fail reason. \n\n(%) - Percent is calculated by dividing the number of a given reason (n) by the number of a racial or ethnic category (N). \n\nThis table is primarily used to examine racial or ethnic differences for screen failing so that barriers to entry can be addressed.") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+```
+
+\newpage
+
+### Phone-screen Screen Fails: Percentage of Total Screened
+
+```{r table_2b, echo=FALSE, warning=FALSE, message=FALSE}
+
+#### Screen Fail Pre Consent #####
+screen_fail_reason_pre_consent <- screen_failed %>%
+  mutate(age_inelig = case_when(scrn_age >= 81 ~ 1,
+                                TRUE ~ 0)) %>%
+  mutate(tics_inelig = case_when(scrn_tics_score <= 25 ~ 1,
+                                 TRUE ~ 0)) %>%
+  mutate(scrn_reschedule = case_when(scrn_reschedule == 1 ~ 0,
+                                     scrn_reschedule == 2 ~ 1)) %>%
+  mutate(scrn_drop_reason = as.numeric(scrn_drop_reason)) %>%
+  mutate(race_ethnicity = case_when(race_added == 3 ~ "Black, African American, or African",
+                                    race_added == 20 ~ "Native Hawaiian or Other Pacific Islanders",
+                                    T ~ race_ethnicity)) %>%
+  mutate(`Reason` = case_when(age_inelig == 1 ~ "Age",
+                              tics_inelig == 1 ~ "TICS < 25",
+                              scrn_reschedule == 1 ~ "Not Interested - No Reason",
+                              scrn_drop_reason == 1 ~ "Too Busy",
+                              scrn_drop_reason == 2 ~ "Distance to Study Activities",
+                              scrn_drop_reason == 3 ~ "Discomfort with Procedures",
+                              scrn_drop_reason == 4 ~ "Disinterest in Study Premise",
+                              scrn_drop_reason == 6 | scrn_drop_reason == 8 ~ "Health Concerns - Personal",
+                              scrn_drop_reason == 7 ~ "Health Concerns - Family",
+                              scrn_drop_reason == 9 ~ "COVID Concerns",
+                              scrn_drop_reason == 10 ~ "Lost to follow-up",
+                              scrn_drop_reason == 5 ~ "Other",
+                              scrn_en_fluence == 1 ~ "Not English Speaking",
+                              scrn_out == 1 ~ "Travel more than 4 weeks",
+                              scrn_transport == 1 ~ "Reliable Transport",
+                              scrn_joint_pain == 1 ~ "Joint Pain",
+                              scrn_phy_move_free == 1 ~ "Assistive Walking Device",
+                              scrn_overhead == 1 ~ "Joint Pain",
+                              scrn_mri_attempt == 1 ~ "MRI Attempt",
+                              scrn_mri_implant == 1 ~ "MRI Eligibility",
+                              scrn_mri_metal == 1 ~ "MRI Eligibility",
+                              scrn_med_subst == 1 ~ "Substance Abuse",
+                              scrn_cancer_treat == 1 ~ "Cancer",
+                              scrn_med_diab == 1 ~ "Insulin",
+                              scrn_heart_treat == 1 ~ "Cardiac Issue",
+                              scrn_med_neuro == 1 ~ "Neurological Issue",
+                              scrn_htn_treat_ch == 1 ~ "Blood Pressure Meds",
+                              scrn_rapamod == 1 ~ "Too Active",
+                              scrn_rapavig == 1 ~ "Too Active",
+                              scrn_rapa_st == 1 ~ "Too Active",
+                              scrn_pcp_clear_response == 1 ~ "No Physician Clearance")) %>%
+  select(Reason, race_ethnicity) 
+
+gt_summary_table <- screen_fail_reason_pre_consent %>%
+  gtsummary::tbl_summary(.,
+                       by = race_ethnicity, 
+                       statistic = list(all_categorical() ~ c("{n}"))) %>%
+  add_overall()
+
+#Isolate the table section of the gtsummary table and change statistics
+#The gtsummary package is limited with available statistic calculation
+#modify_table isolates the table from the gtsummary list and changes each statistic to be n (n/number consented)
+modify_table <- gt_summary_table$table_body %>%
+  mutate(across(contains("stat"), ~ case_when(!is.na(.x) ~ paste0(.x," (",as.character(round(as.numeric(.x)/nrow(screened)*100), digits = 0),"%)"))))
+
+#Insert the modified table back into gtsummary list
+gt_summary_table$table_body <- modify_table 
+
+
+gt_summary_table %>%
+  modify_header(label ~ " ") %>%
+  modify_footnote(all_stat_cols() ~ "n (%)") %>%
+  as_flex_table() %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines(paste0("Phone-screen Screen Fails (Total Screened = ",nrow(screened),")")) %>%
+  add_footer_lines(., "n - Number of listed screen-fail reason. \n\n(%) - Percent is calculated by dividing the number of a given reason (n) by the total number of phone screens (N).This percentage includes all eligible and still screening participants.") %>%
+  fontsize(., size = 9, part = "all") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+  
+
+
+```
+
+\newpage
+
+### Post-consent Screen Fails: By Race and Ethnicity
+
+```{r table_2c, echo=FALSE, warning=FALSE, message=FALSE}
+
+#### Screen Fail Post Consent #####
+screen_fail_after_consent_reason_dsmc <- screen_failed_after_consent %>%
+  mutate(`Reason` = case_when(baseline_scrnfail_ie == 1 ~ "Age",
+                              baseline_scrnfail_ie == 2 ~ "Not able to speak and read English",
+                              baseline_scrnfail_ie == 3 ~ "Not cleared by PCP or healthcare provider",
+                              baseline_scrnfail_ie == 4 ~ "No reliable means of transport",
+                              baseline_scrnfail_ie == 5 ~ "Adjudicated not eligible",
+                              baseline_scrnfail_ie == 6 ~ "Travel more than 4 weeks",
+                              baseline_scrnfail_ie == 7 ~ "Use of assistive device for ambulation",
+                              baseline_scrnfail_ie == 8 ~ "Joint pain",
+                              baseline_scrnfail_ie == 9 ~ "MRI contraindication",
+                              baseline_scrnfail_ie == 10 ~ "Substance abuse",
+                              baseline_scrnfail_ie == 11 ~ "Cancer",
+                              baseline_scrnfail_ie == 12 ~ "Insulin",
+                              baseline_scrnfail_ie == 13 ~ "Heart disease",
+                              baseline_scrnfail_ie == 14 ~ "Neurological condition",
+                              baseline_scrnfail_ie == 15 ~ "Hx of head injury",
+                              baseline_scrnfail_ie == 16 ~ "Change in blood pressure meds",
+                              baseline_scrnfail_ie == 17 ~ "Too active",
+                              baseline_scrnfail_ie == 18 ~ "Unsafe condition as determined by medical monitor",
+                              baseline_scrnfail_nocont == 1 ~ "Too busy",
+                              baseline_scrnfail_nocont == 2 ~ "Distance to study activities",
+                              baseline_scrnfail_nocont == 3 ~ "Discomfort with procedures",
+                              baseline_scrnfail_nocont == 4 ~ "Disinterest in study premise",
+                              baseline_scrnfail_nocont == 5 ~ "Other",
+                              baseline_scrnfail_nocont == 7 ~ "Health concerns - family",
+                              baseline_scrnfail_nocont == 8 ~ "Health concerns - personal",
+                              baseline_scrnfail_nocont == 9 ~ "COVID concerns"
+                              )) %>%
+  select(Reason, race_ethnicity)
+
+gtsummary::tbl_summary(screen_fail_after_consent_reason_dsmc, by = race_ethnicity) %>%
+  modify_header(label ~ " ") %>%
+  add_overall() %>%
+  as_flex_table() %>%
+  fontsize(., size = 10, part = "all") %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines("Post-consent Screen Fails") %>%
+  add_footer_lines("n - Number of listed screen-fail reason. \n\n(%) - Percent is calculated by dividing the number of a given reason (n) by the number of a racial or ethnic category (N). \n\nThis table is primarily used to examine racial or ethnic differences for screen failing so that barriers to entry can be addressed.") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+```
+
+\newpage
+
+### Post-consent Screen Fails: Percentage of Total Screened
+
+```{r table_2d, echo=FALSE, warning=FALSE, message=FALSE}
+
+#### Screen Fail Post Consent #####
+screen_fail_after_consent_reason_dsmc <- screen_failed_after_consent %>%
+  mutate(`Reason` = case_when(baseline_scrnfail_ie == 1 ~ "Age",
+                              baseline_scrnfail_ie == 2 ~ "Not able to speak and read English",
+                              baseline_scrnfail_ie == 3 ~ "Not cleared by PCP or healthcare provider",
+                              baseline_scrnfail_ie == 4 ~ "No reliable means of transport",
+                              baseline_scrnfail_ie == 5 ~ "Adjudicated not eligible",
+                              baseline_scrnfail_ie == 6 ~ "Travel more than 4 weeks",
+                              baseline_scrnfail_ie == 7 ~ "Use of assistive device for ambulation",
+                              baseline_scrnfail_ie == 8 ~ "Joint pain",
+                              baseline_scrnfail_ie == 9 ~ "MRI contraindication",
+                              baseline_scrnfail_ie == 10 ~ "Substance abuse",
+                              baseline_scrnfail_ie == 11 ~ "Cancer",
+                              baseline_scrnfail_ie == 12 ~ "Insulin",
+                              baseline_scrnfail_ie == 13 ~ "Heart disease",
+                              baseline_scrnfail_ie == 14 ~ "Neurological condition",
+                              baseline_scrnfail_ie == 15 ~ "Hx of head injury",
+                              baseline_scrnfail_ie == 16 ~ "Change in blood pressure meds",
+                              baseline_scrnfail_ie == 17 ~ "Too active",
+                              baseline_scrnfail_ie == 18 ~ "Unsafe condition as determined by medical monitor",
+                              baseline_scrnfail_nocont == 1 ~ "Too busy",
+                              baseline_scrnfail_nocont == 2 ~ "Distance to study activities",
+                              baseline_scrnfail_nocont == 3 ~ "Discomfort with procedures",
+                              baseline_scrnfail_nocont == 4 ~ "Disinterest in study premise",
+                              baseline_scrnfail_nocont == 5 ~ "Other",
+                              baseline_scrnfail_nocont == 7 ~ "Health concerns - family",
+                              baseline_scrnfail_nocont == 8 ~ "Health concerns - personal",
+                              baseline_scrnfail_nocont == 9 ~ "COVID concerns"
+                              )) %>%
+  select(Reason, race_ethnicity)
+
+table_2d <- screen_fail_after_consent_reason_dsmc %>%
+  gtsummary::tbl_summary(.,
+                       by = race_ethnicity, 
+                       statistic = list(all_categorical() ~ c("{n}"))) %>%
+  add_overall()
+
+#Isolate the table section of the gtsummary table and change statistics
+#The gtsummary package is limited with available statistic calculation
+#modify_table isolates the table from the gtsummary list and changes each statistic to be n (n/number consented)
+modify_table <- table_2d$table_body %>%
+  mutate(across(contains("stat"), ~ case_when(!is.na(.x) ~ paste0(.x," (",as.character(round(as.numeric(.x)/nrow(consented)*100), digits = 0),"%)"))))
+
+#Insert the modified table back into gtsummary list
+table_2d$table_body <- modify_table 
+
+
+table_2d %>%
+  modify_header(label ~ " ") %>%
+  modify_footnote(all_stat_cols() ~ "n (%)") %>%
+  as_flex_table() %>%
+  fontsize(., size = 10, part = "all") %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Post-consent Screen Fails (Total Consented = ",nrow(consented),")")) %>%
+  add_footer_lines(., "n - Number of listed screen-fail reason. \n\n(%) - Percent is calculated by dividing the number of a given reason (n) by the total number of consents. This percentage includes all eligible and still screening participants.") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+```
+
+\newpage
+
+## Table 3a: Demographic and Key Baseline Characteristics
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_4, echo=FALSE, warning=FALSE, message=FALSE}
+
+#Source  https://www.ers.usda.gov/data-products/rural-urban-commuting-area-codes/
+#Updated on 8/18/22 with list from EDV
+rural_zips <- import(file.path(data_dir,'dsmc_report','forhp-eligible-zips.xlsx')) %>%
+  pull(ZIP_CODE)
+
+enrolled_df <- randomized 
+
+test <- enrolled_df  %>%
+  mutate(Rural = case_when(scrn_address_zip %in% rural_zips ~ "Rural",
+                           T ~ "Not Rural")) %>%
+  select(race, ethnicity, gender, Rural, age) %>%
+  rename(Race = race, Ethnicity = ethnicity, Gender = gender, Age = age)
+
+gtsummary::tbl_summary(test,
+                       statistic = all_continuous() ~ "{mean}, ({sd})",
+                       type = list(Age ~ "continuous")) %>%
+  modify_header(label ~ " ") %>%
+  as_flex_table() 
+
+
+
+
+
+```
+
+\newpage
+
+## Table 3b: Demographic and Key Baseline Characteristics
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r screened_dems, echo=FALSE, warning=FALSE, message=FALSE}
+
+#Source  https://www.ers.usda.gov/data-products/rural-urban-commuting-area-codes/
+#Updated with list from EDV on 8/18/22
+rural_zips <- import(file.path(data_dir,'dsmc_report','forhp-eligible-zips.xlsx')) %>%
+  pull(ZIP_CODE)
+
+screened_df <- screened
+
+test <- screened_df  %>%
+  mutate(Rural = case_when(scrn_address_zip %in% rural_zips ~ "Rural",
+                           T ~ "Not Rural")) %>%
+  select(race, ethnicity, gender, Rural, scrn_age) %>%
+  rename(Race = race, Ethnicity = ethnicity, Gender = gender, Age = scrn_age)
+
+gtsummary::tbl_summary(test,
+                       statistic = all_continuous() ~ "{mean}, ({sd})",
+                       type = list(Age ~ "continuous")) %>%
+  as_flex_table() 
+
+
+
+
+
+```
+
+\newpage
+
+## Figure 3: Intervention Adherence
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+Adherence data are captured in real-time using self-reported exercise logs and Fitbit devices. Percent adherence is estimated by dividing the sum of all completed exercise minutes by the sum of all prescribed exercise minutes. Completed and prescribed minutes will vary for every participant as group and current week of intervention impact the prescription. This plot is an estimate of current intervention adherence. We expect that it will change as data are cleaned.
+
+In response to our 07-26-2022 report, adherence has been updated to include three measures.
+
+1)  Subjective - Bias High: The value reported last meeting. This method always selects the highest number of minutes reported between the Fitbit and Exercise Log.
+2)  Subjective: This method always uses the minutes reported from the Exercise Log.
+3)  Objective: This method uses heart rate data from the Fitbit for aerobic and core & fusion activity and exercises completed as recorded in the Exercise Log for resistance exercise.
+
+```{r figure_3, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+
+##2/6/23: This was used to report adherence the first time. It has been replaced and is not included in the report, but the code is kept. 
+
+source(file.path(script_dir,'06_exercise_data_consolidation.R'))
+
+figure_3_to_join <- comet_scienctist_markdown %>%
+  select(comet_study_id, Status)
+  
+missing_ex_weeks <- sum(is.na(clean_all_ex_data$final_ex_min))
+
+
+intervention_adherence <- clean_all_ex_data %>%
+  select(-final_ex_min_source) %>%
+  group_by(comet_study_id) %>%
+  summarize(sum_completed_ex_min = sum(final_ex_min, na.rm = T), sum_prescribed_ex_min = sum(prescribed_ex_min, na.rm = T)) %>%
+  mutate(adherence = sum_completed_ex_min/sum_prescribed_ex_min*100) %>%
+  left_join(., figure_3_to_join, by = "comet_study_id") %>%
+  mutate(random_id = sample(nrow(.), size = nrow(.), replace = F)) %>%
+  select(-comet_study_id)
+
+summary_mean <- round(mean(intervention_adherence$adherence, na.rm = T), digits = 0)
+summary_min <- round(min(intervention_adherence$adherence, na.rm = T), digits = 0)
+summary_max <- round(max(intervention_adherence$adherence, na.rm = T), digits = 0)
+summary_sd <- round(sd(intervention_adherence$adherence, na.rm = T), digits = 0)
+
+summary_language <- paste0(summary_mean, ", (",summary_sd,")*")
+
+intervention_adherence_graph <- ggplot(intervention_adherence, aes(random_id,adherence, colour = Status)) +
+  geom_point() +
+  geom_abline(slope = 0, intercept = 100, linetype = 3) +
+  ylim(0,200) + 
+  scale_color_manual(values=c("black","black","red","red")) +
+  ggtitle("COMET Intervention Adherence Estimate") +
+  ylab("Percent Adherence (%)") +
+  xlab("Randomized Study ID") +
+  annotate("text", label = summary_language, x = max(intervention_adherence$random_id)-1, y = 5) +
+  labs(caption = paste("Mean, (SD)*\n",
+                       "Study IDs are randomized and removed")) +
+  theme_bw() + 
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        plot.background = element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.75, .9),
+        legend.title = element_blank()) 
+
+ggsave(file.path(data_dir,'dsmc_report','intervention_adherence.png'), intervention_adherence_graph, width = 7, height = 6, units = "in")
+knitr::include_graphics(file.path(data_dir,'dsmc_report','intervention_adherence.png'), dpi = 7) 
+# 
+# missing_ex_weeks_df <- data.frame(name = c("Missing Exercise Weeks"),
+#                                   n = c(missing_ex_weeks),
+#                                   Percent = c(round(missing_ex_weeks/nrow(clean_all_ex_data)*100, 0))) %>%
+#   rename(" " = name)
+#   
+# flextable(missing_ex_weeks_df) %>%
+#   add_header_lines(paste0("Total Expected Exercise Weeks (N = ",nrow(clean_all_ex_data),")")) %>%
+#   theme_booktabs() %>%
+#   set_table_properties(., layout = "autofit", width = 1)
+
+
+
+```
+
+```{r figure_3_2, echo=FALSE, warning=FALSE, message=FALSE, fig.width=10}
+
+#' EDV decided not to use error bars on 2.7.23 JC
+# time <- time_based_adherence %>%
+#   group_by(random_id) %>%
+#   summarise(mean = mean(adherence_score_log, na.rm = T), sd = sd(adherence_score_log, na.rm = T)) %>%
+#   mutate(low = mean - sd, high = mean + sd)
+# 
+# ggplot(time, aes(x=random_id, y=mean)) + 
+#   geom_point() +
+#   geom_errorbar(aes(ymin=low, ymax=high), width=.2,
+#                 position=position_dodge(0.05)) +
+#   theme_bw() +
+#   labs(title = "Subjective Adherence") +
+#   ylab("Adherence") +
+#   xlab("Random ID") +
+#   theme(legend.position = "top",
+#         axis.ticks = element_blank(),
+#         axis.text.x = element_blank()) +
+#   scale_y_continuous(breaks = seq(1:5)) +
+#   geom_abline(slope = 0, intercept = 1, linetype = 3)
+# 
+# performance <- performance_based_adherence %>%
+#   group_by(random_id) %>%
+#   summarise(mean = mean(adherence_score_performance, na.rm = T), sd = sd(adherence_score_performance, na.rm = T)) %>%
+#   mutate(low = mean - sd, high = mean + sd)
+# 
+# ggplot(performance, aes(x=random_id, y=mean)) + 
+#   geom_point() +
+#   geom_errorbar(aes(ymin=low, ymax=high), width=.2,
+#                 position=position_dodge(0.05)) +
+#   theme_bw() +
+#   labs(title = "Objective Adherence") +
+#   ylab("Adherence") +
+#   xlab("Random ID") +
+#   theme(legend.position = "top",
+#         axis.ticks = element_blank(),
+#         axis.text.x = element_blank()) +
+#   scale_y_continuous(breaks = seq(1:5)) +
+#   geom_abline(slope = 0, intercept = 1, linetype = 3)
+
+
+combined <- time_based_adherence %>%
+  left_join(., performance_based_adherence, by = c("week","random_id")) %>%
+  filter(!is.na(adherence_score_performance)) %>%
+  pivot_longer(contains("adherence")) %>%
+  group_by(name, random_id) %>%
+  summarise(mean = mean(value, na.rm = T)) %>%
+  mutate(mean_average = mean*100) %>%
+  mutate(name = case_when(name == "adherence_score_high" ~ "Subjective - Bias High",
+                          name == "adherence_score_log" ~ "Subjective",
+                          name == "adherence_score_performance" ~ "Objective"))
+
+adherence_graph <-
+ ggplot(combined, aes(x = random_id, y = mean_average, colour = name)) +
+  geom_point(size = 1) +
+  geom_abline(slope = 0, intercept = 100, linetype = 3) +
+  geom_point() +
+  geom_abline(slope = 0, intercept = 100, linetype = 3) +
+  ylim(0,250) + 
+  scale_color_manual(values=c("red","black","grey")) +
+  #scale_color_manual(values=c("violet","#4b0082","blue")) +
+  ggtitle("Adherence") +
+  ylab("Percent Adherence (%)") +
+  xlab("Randomized Study ID") +
+  geom_vline(xintercept = seq(from = min(combined$random_id)-.5, to = max(combined$random_id)+.5, by = 1), alpha = .15) +
+  theme_bw() + 
+    labs(caption = "Study IDs are randomized and removed") +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        plot.background = element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.75, .9),
+        legend.title = element_blank()) 
+
+ggsave(file.path(data_dir,'dsmc_report','adherence_graph.png'), adherence_graph, width = 9, height = 6, units = "in")
+knitr::include_graphics(file.path(data_dir,'dsmc_report','adherence_graph.png'), dpi = 7) 
+
+
+ 
+  
+
+```
+
+\newpage
+
+# Protocol Fidelity
+
+**Protocol Deviation**
+
+A protocol deviation occurs when, without significant consequences, the activities on a study diverge from the Institutional Review Board-approved protocol.
+
+-   Study visit occurred outside of protocol time frame due to participant's schedule
+
+-   Study activities performed close to, but not precisely at specified time points
+
+**Protocol Violation**
+
+A divergence from the protocol that materially (a) reduces the quality or completeness of the data, (b) makes the Informed Consent Form inaccurate, or (c) impacts a subject's safety, rights, or welfare.
+
+-   Failure to obtain informed consent or re-consent when required by the IRB.
+
+-   Modifying the protocol without IRB approval, except to avoid immediate hazard to subjects.
+
+-   Inadequate or delinquent informed consent
+
+-   Inclusion/exclusion criteria not met
+
+-   Unreported serious adverse events
+
+-   Improper breaking of the blind
+
+-   Use of prohibited medication
+
+-   Mishandled samples
+
+-   Materially inadequate record keeping
+
+-   Intentional deviation from protocol, Good Clinical Practice, or regulations by study personnel
+
+**Reference**
+
+See Bhatt (2012) for more information.
+
+Bhatt A. Protocol deviation and violation. Perspect Clin Res. 2012 Jul;3(3):117. doi: 10.4103/2229-3485.100663. PMID: 23125964; PMCID: PMC3487227.
+
+\newpage
+
+## Table 4: Protocol Violations
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_3a, echo=FALSE, warning=FALSE, message=FALSE}
+
+violations <- protocol_deviation %>%
+  filter(redcap_repeat_instrument == "protocol_deviation") %>%
+  filter(ae_dev_or_vio == 2) %>%
+  mutate(`Protocol Violation` = case_when(deviation_type == 1 ~ "Did not meet inclusion/exclusion criteria",
+                                          deviation_type == 2 ~ "Fast did not occur before assessment",
+                                          deviation_type == 3 ~ "Participant taking concomitant drugs which are not allowed",
+                                          deviation_type == 4 ~ "Assessment outside protocol window",
+                                          deviation_type == 5 ~ "Failure to obtain informed consent",
+                                          TRUE ~ "New Reason - Need to update")) 
+
+protocol_violations <- violations %>%
+  group_by(`Protocol Violation`) %>%
+  count() 
+
+
+violations_after_last_report <- violations %>%
+  filter(deviation_date > date_of_last_report) %>%
+  group_by(`Protocol Violation`) %>%
+  count() %>%
+  rename(`Since Last DSMC Report` = n)
+
+total_violations <- sum(protocol_violations$n)
+total_violations_after_last_report <- sum(violations_after_last_report$`Since Last DSMC Report`)
+
+consented_since_last_report <- comet_scienctist_markdown %>%
+  filter(consent_1_date > date_of_last_report) %>%
+  nrow(.)
+
+table_3a <- protocol_violations %>%
+  left_join(., violations_after_last_report) %>%
+  ungroup() %>%
+  add_row(`Protocol Violation` = "Total # of Violations", n = total_violations, `Since Last DSMC Report` = total_violations_after_last_report) %>%
+  add_row(`Protocol Violation` = "Participants Consented", n = nrow(consented), `Since Last DSMC Report` = consented_since_last_report) %>%
+  add_row(`Protocol Violation` = "Violations per Participant", n = round(total_violations / nrow(consented), digits = 2), `Since Last DSMC Report` = round(total_violations_after_last_report / consented_since_last_report, digits = 2))
+ 
+
+table_3a %>%
+  flextable() %>%
+  autofit() %>%
+  theme_booktabs()
+
+
+```
+
+\newpage
+
+## Table 5: Protocol Deviations
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_3b, echo=FALSE, warning=FALSE, message=FALSE}
+
+deviations <- protocol_deviation %>%
+  filter(redcap_repeat_instrument == "protocol_deviation") %>%
+  filter(ae_dev_or_vio == 1) %>%
+  mutate(`Protocol Deviation` = case_when(deviation_type == 1 ~ "Did not meet inclusion/exclusion criteria",
+                                          deviation_type == 2 ~ "Fast did not occur before assessment",
+                                          deviation_type == 3 ~ "Participant taking concomitant drugs which are not allowed",
+                                          deviation_type == 4 ~ "Assessment outside protocol window",
+                                          deviation_type == 5 ~ "Failure to obtain informed consent",
+                                          deviation_type == 6 ~ "Missing data due to study staff error",
+                                          deviation_type == 7 ~ "Outside 20-day randomization to intervention start window",
+                                          deviation_type == 8 ~ "Outside 90-day consent to intervention start window",
+                                          TRUE ~ "New Reason - Need to update")) 
+
+
+protocol_deviations <- deviations %>%
+  group_by(`Protocol Deviation`) %>%
+  count() 
+
+
+deviations_after_last_report <- deviations %>%
+  filter(deviation_date > date_of_last_report) %>%
+  group_by(`Protocol Deviation`) %>%
+  count() %>%
+  rename(`Since Last DSMC Report` = n)
+
+total_deviations <- sum(protocol_deviations$n)
+total_deviations_after_last_report <- sum(deviations_after_last_report$`Since Last DSMC Report`)
+
+consented_since_last_report <- comet_scienctist_markdown %>%
+  filter(consent_1_date > date_of_last_report) %>%
+  nrow(.)
+
+table_3b <- protocol_deviations %>%
+  left_join(., deviations_after_last_report) %>%
+  ungroup() %>%
+  add_row(`Protocol Deviation` = "Total # of Deviations", n = total_deviations, `Since Last DSMC Report` = total_deviations_after_last_report) %>%
+  add_row(`Protocol Deviation` = "Participants Consented", n = nrow(consented), `Since Last DSMC Report` = consented_since_last_report) %>%
+  add_row(`Protocol Deviation` = "Deviations per Participant", n = round(total_deviations / nrow(consented), digits = 2), `Since Last DSMC Report` = round(total_deviations_after_last_report / consented_since_last_report, digits = 2))
+ 
+
+table_3b %>%
+  flextable() %>%
+  autofit() %>%
+  theme_booktabs()
+
+
+```
+
+\newpage
+
+## Listing 1: New Protocol Violations
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+```{r listing_1_protocol_violation, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+
+listing_1_pv <- protocol_deviation %>%
+  filter(redcap_repeat_instrument == "protocol_deviation") %>%
+  filter(ae_dev_or_vio == 2) %>%
+  filter(deviation_date_indentified >= date_of_last_report) %>%
+  mutate(`Protocol Violation` = case_when(deviation_type == 1 ~ "Did not meet inclusion/exclusion criteria",
+                                          deviation_type == 2 ~ "Fast did not occur before assessment",
+                                          deviation_type == 3 ~ "Participant taking concomitant drugs which are not allowed",
+                                          deviation_type == 4 ~ "Assessment outside protocol window",
+                                          deviation_type == 5 ~ "Failure to obtain informed consent",
+                                          TRUE ~ "New Reason - Need to update")) %>%
+  mutate(`Resulted in AE` = case_when(deviation_ae == 1 ~ "Yes",
+                                      deviation_ae == 0 ~ "No")) %>%
+  mutate(`Participant Continued` = case_when(deviation_pt_continue == 1 ~ "Yes",
+                                             deviation_pt_continue == 0 ~ "No")) %>%
+  select(deviation_date, `Protocol Violation`, `Resulted in AE`, `Participant Continued`, deviation_description) %>%
+  rename("Date" = deviation_date, "Notes" = deviation_description) %>%
+  arrange(Date)
+
+if(nrow(listing_1_pv) > 0) {
+  listing_1_pv %>% 
+    flextable() %>% 
+    align(align = "center", part = "header") %>%
+    add_header_lines(., paste0("Protocol Deviations Since Date of Last Report (",date_of_last_report,")")) %>% 
+    theme_booktabs() %>%
+    set_table_properties(., layout = "autofit", width = 1)
+} else {
+  cat("There have been no new violations.")
+}
+
+
+
+```
+
+\newpage
+
+## Listing 2: All Protocol Violations
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+```{r all_protocol_violations, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+
+all_violations <- protocol_deviation %>%
+  filter(redcap_repeat_instrument == "protocol_deviation") %>%
+  filter(ae_dev_or_vio == 2) %>%
+  mutate(`Protocol Violation` = case_when(deviation_type == 1 ~ "Did not meet inclusion/exclusion criteria",
+                                          deviation_type == 2 ~ "Fast did not occur before assessment",
+                                          deviation_type == 3 ~ "Participant taking concomitant drugs which are not allowed",
+                                          deviation_type == 4 ~ "Assessment outside protocol window",
+                                          deviation_type == 5 ~ "Failure to obtain informed consent",
+                                          TRUE ~ "New Reason - Need to update")) %>%
+  mutate(`Resulted in AE` = case_when(deviation_ae == 1 ~ "Yes",
+                                      deviation_ae == 0 ~ "No")) %>%
+  mutate(`Participant Continued` = case_when(deviation_pt_continue == 1 ~ "Yes",
+                                             deviation_pt_continue == 0 ~ "No")) %>%
+  select(deviation_date, `Protocol Violation`, `Resulted in AE`, `Participant Continued`, deviation_description) %>%
+  rename("Date" = deviation_date, "Notes" = deviation_description) %>%
+  arrange(Date)
+
+if(nrow(all_violations) > 0) {
+  all_violations %>% 
+    flextable() %>% 
+    align(align = "center", part = "header") %>%
+    add_header_lines(., paste0("All Protocol Deviations")) %>% 
+    theme_booktabs() %>%
+    set_table_properties(., layout = "autofit", width = 1)
+} else {
+  cat("There have been no violations.")
+}
+
+
+
+```
+
+\newpage
+
+## Table 6: Data Counts
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+```{r data_counts, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+expected_baseline <- randomized %>%
+  mutate(record_id = as.character(record_id))
+
+expected_week_26 <- comet %>%
+  mutate(final_date = case_when(intervention_status == 1 ~ today(),
+                                intervention_status == 2 ~ today(),
+                                intervention_status == 3 ~ today(),
+                                intervention_status == 4 ~ int_withdrew_date,
+                                intervention_status == 5 ~ int_losttofollowup_date)) %>%
+  filter(final_date >= comet_week26date + days(12))
+
+expected_week_52 <- comet %>%
+  mutate(final_date = case_when(intervention_status == 1 ~ today(),
+                                intervention_status == 2 ~ today(),
+                                intervention_status == 3 ~ today(),
+                                intervention_status == 4 ~ int_withdrew_date,
+                                intervention_status == 5 ~ int_losttofollowup_date)) %>%
+  filter(final_date >= comet_week52date + days(12))
+  
+baseline_tests <- randomized %>%
+  select(record_id, redcap_event_name, cog_date, mri_date, ex_dxa_date, ex_1rm_staff, ex_gxt_staff, barse_1, ex_blood_1_time) %>%
+  mutate(across(.cols = c("cog_date", "mri_date", "ex_dxa_date", "ex_1rm_staff", "ex_gxt_staff", "barse_1", "ex_blood_1_time"),
+                .fns = ~ ifelse(!is.na(.x) == TRUE, 1, 0))) %>%
+  mutate(record_id = as.character(record_id)) 
+
+
+week_26_tests <- comet %>%
+  filter(redcap_event_name == "week_26_arm_1") %>%
+  filter(record_id %in% expected_week_26$record_id) %>%
+  select(record_id, redcap_event_name, cog_date, barse_1) %>%
+  mutate(across(.cols = c("cog_date", "barse_1"),
+                .fns = ~ ifelse(!is.na(.x) == TRUE, 1, 0))) 
+
+
+week_52_tests <- comet %>%
+  filter(redcap_event_name == "week_52_arm_1") %>%
+  filter(record_id %in% expected_week_52$record_id) %>%
+  select(record_id, redcap_event_name, cog_date, mri_date, ex_dxa_date, ex_1rm_staff, ex_gxt_staff, barse_1, ex_blood_1_time) %>%
+  mutate(across(.cols = c("cog_date", "mri_date", "ex_dxa_date", "ex_1rm_staff", "ex_gxt_staff", "barse_1", "ex_blood_1_time"),
+                .fns = ~ ifelse(!is.na(.x) == TRUE, 1, 0))) %>%
+  mutate(record_id = as.character(record_id)) 
+
+baseline_name <- paste0("Baseline (N=",nrow(expected_baseline),")")
+week_26_name <- paste0("Week 26 (N=",nrow(expected_week_26),")")
+week_52_name <- paste0("Week 56 (N=",nrow(expected_week_52),")")
+
+data_counts <- data.frame(Measure = c("Cognitive Testing – 1º", "MRI – 2º", "GXT – 2º", "1-RM – 2º", "DXA – 2º", "Home Survey Battery – 2º", "Phlebotomy – eº"),
+                          Baseline = c(sum(baseline_tests$cog_date), sum(baseline_tests$mri_date), sum(baseline_tests$ex_gxt_staff), sum(baseline_tests$ex_1rm_staff), sum(baseline_tests$ex_dxa_date), sum(baseline_tests$barse_1), sum(baseline_tests$ex_blood_1_time)),
+                          week_26 = c(sum(week_26_tests$cog_date), NA, NA, NA, NA, sum(week_26_tests$barse_1), NA),
+                          week_52 = c(sum(week_52_tests$cog_date), sum(week_52_tests$mri_date), sum(week_52_tests$ex_gxt_staff), sum(week_52_tests$ex_1rm_staff), sum(week_52_tests$ex_dxa_date), sum(week_52_tests$barse_1), sum(week_52_tests$ex_blood_1_time))) %>%
+  rename(!!baseline_name := Baseline, !!week_26_name := week_26, !!week_52_name := week_52)
+
+
+
+data_counts %>% 
+  flextable() %>% 
+  add_header_lines(., "Data Counts – Primary and Secondary Measures") %>% 
+  add_footer_lines(., "1º primary outcome, 2º secondary outcome, eº exploratory measure") %>%
+  add_footer_lines(paste0("Data counts reflect the database as of ",data_date,". Some missing data are expected as tests are ongoing and data continue to be entered.")) %>%
+  align(align = "center", part = "header") %>%
+  theme_booktabs() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+
+
+```
+
+\newpage
+
+## Figure 4: Participant Fidelity Checks
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+Participants are observed exercising at the gym by study staff quarterly. Percent of Expected Fidelity Checks Completed is calculated by dividing the number of checks that have occurred by the number of checks that are expected given each participant's week in the intervention. Fidelity checks are expected to occur on the schedule shown below.
+
+1.  Orientation
+2.  Weeks 2-13
+3.  weeks 13-26
+4.  weeks 27-39
+5.  weeks 40-52
+
+```{r pt_fidelity, echo=FALSE, warning=FALSE, message=FALSE}
+#Code was taken from ymca_liason_markdown.Rmd and adapted
+
+expected_checks <- comet %>%
+  filter(today() > comet_interventionstart) %>%
+  filter(redcap_event_name == "baseline_arm_1") %>%
+  mutate(end_date = case_when(intervention_status == 2 ~ int_date_complete,
+                              intervention_status == 3 | intervention_status == 4 ~ int_withdrew_date,
+                              intervention_status == 5 ~ int_losttofollowup_date)) %>%
+  mutate(check_1 = comet_interventionstart) %>%
+  mutate(check_2 = case_when(is.na(end_date) | end_date > comet_interventionstart + 7 * 13 ~ comet_interventionstart + 7 * 12)) %>%
+  mutate(check_3 = case_when(is.na(end_date) | end_date > comet_interventionstart + 7 * 26 ~ comet_interventionstart + 7 * 25)) %>%
+  mutate(check_4 = case_when(is.na(end_date) | end_date > comet_interventionstart + 7 * 39 ~ comet_interventionstart + 7 * 38)) %>%
+  mutate(check_5 = case_when(is.na(end_date) | end_date > comet_week52date ~ comet_week52date)) %>%
+  select(record_id, check_1, check_2, check_3, check_4, check_5) %>%
+  pivot_longer(., cols = c("check_1","check_2","check_3","check_4","check_5")) %>%
+  filter(value < today() + 7*12) %>%
+  mutate(name = case_when(name == "check_1" ~ 1,
+                          name == "check_2" ~ 2,
+                          name == "check_3" ~ 3,
+                          name == "check_4" ~ 4,
+                          name == "check_5" ~ 5)) %>%
+  filter(value <= today()) %>%
+  group_by(record_id) %>%
+  count() %>%
+  rename("Expected" = n)
+
+checks <- fidelity_check %>% 
+  filter(redcap_repeat_instrument == "intervention_fidelity_check") %>%
+  select(record_id, redcap_repeat_instance, fidelity_date) %>%
+  group_by(record_id) %>%
+  count() %>%
+  rename("Occurred" = n)
+
+pt_fidelity_to_join <- comet_scienctist_markdown %>%
+  select(record_id, Status)
+
+pt_fidelity <- full_join(expected_checks, checks, by = "record_id") %>%
+  mutate(percent = round(Occurred/Expected*100, digits=0)) %>%
+  left_join(., pt_fidelity_to_join, by = "record_id") %>%
+  na.omit(.)
+pt_fidelity$random_id <- sample(nrow(pt_fidelity), size = nrow(pt_fidelity), replace = F) 
+
+
+
+
+pt_fidelity_graph <- ggplot(pt_fidelity, aes(random_id,percent, colour = Status)) +
+  geom_point() +
+  geom_abline(slope = 0, intercept = 100, linetype = 3) +
+  ylim(0,300) + 
+  scale_color_manual(values=c("black","black","red","red")) +
+  ggtitle("Participant Fidelity Checks") +
+  ylab("Percent of Expected Fidelity Checks Completed (%)") +
+  xlab("Randomized Study ID") +
+  theme_bw() + 
+    labs(caption = "Study IDs are randomized and removed") +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        plot.background = element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.75, .9),
+        legend.title = element_blank()) 
+
+ggsave(file.path(data_dir,'dsmc_report','pt_fidelity.png'), pt_fidelity_graph, width = 7, height = 6, units = "in")
+knitr::include_graphics(file.path(data_dir,'dsmc_report','pt_fidelity.png'), dpi = 7) 
+
+
+
+
+```
+
+\newpage
+
+## Figure 5: Trainer Fidelity Checks
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+Active trainers are observed by study staff at minimum quarterly. Percent of Expected Fidelity Checks Completed is calculated by dividing the number of checks that have occurred by the number of quarters a trainer has been active. Any time a trainer is present during a participant fidelity check, a trainer fidelity check is performed. This is especially common at the beginning of the intervention. Thus, trainers with multiple participants receive more fidelity checks.
+
+```{r trainer_fidelity, echo=FALSE, warning=FALSE, message=FALSE}
+#Code was taken from ymca_liason_markdown.Rmd and adapted
+
+active_trainer_list <- comet %>%
+  filter(intervention_status == 1) %>%
+  select(gym_trainer) %>%
+  pull()
+
+tr_checks <- trainer_db %>%
+  filter(redcap_repeat_instrument == "comet_intervention_fidelity_check") %>%
+  filter(record_id %in% active_trainer_list) %>%
+  select(record_id, tr_comet_fid_date) %>% 
+  group_by(record_id) %>%
+  count()
+
+tr_expected_checks <- trainer_db %>%
+  filter(record_id %in% active_trainer_list & is.na(redcap_repeat_instance)) %>%
+  mutate(expected_checks = ceiling(as.numeric(today()-ymd(date_comet_orientation))/91)) %>%
+  select(record_id, expected_checks)
+
+
+tr_fidelity <- full_join(tr_expected_checks, tr_checks, by = "record_id") %>%
+  mutate(percent = round(n/expected_checks*100, digits=0)) 
+tr_fidelity$random_id <- sample(nrow(tr_fidelity), size = nrow(tr_fidelity), replace = F)
+
+
+
+tr_fidelity_graph <- ggplot(tr_fidelity, aes(random_id,percent)) +
+  geom_point() +
+  geom_abline(slope = 0, intercept = 100, linetype = 3) +
+  ylim(0,300) + 
+  scale_color_manual(values=c("black")) +
+  ggtitle("Trainer Fidelity Checks") +
+  ylab("Percent of Expected Fidelity Checks Completed (%)") +
+  xlab("Randomized Study ID") +
+  theme_bw() + 
+  labs(caption = "Trainer IDs are randomized and removed") +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        plot.background = element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.75, .9),
+        legend.title = element_blank()) 
+
+ggsave(file.path(data_dir,'dsmc_report','tr_fidelity.png'), tr_fidelity_graph, width = 7, height = 6, units = "in")
+knitr::include_graphics(file.path(data_dir,'dsmc_report','tr_fidelity.png'), dpi = 7) 
+
+
+
+
+```
+
+\newpage
+
+# Safety Assessments for All Participants: Tables and Listing
+
+## CTCAE 5.0 Criteria
+
+**Grades**
+
+Grade refers to the severity of the AE. The CTCAE displays Grades 1 through 5 with unique clinical descriptions of severity for each AE based on this general guideline:
+
+-   **Grade 1** Mild; asymptomatic or mild symptoms; clinical or diagnostic observations only; intervention not indicated.
+
+-   **Grade 2** Moderate; minimal, local or noninvasive intervention indicated; limiting age-appropriate instrumental ADL\*.
+
+-   **Grade 3** Severe or medically significant but not immediately life-threatening; hospitalization or prolongation of hospitalization indicated; disabling; limiting self care ADL\*\*.
+
+-   **Grade 4** Life-threatening consequences; urgent intervention indicated.
+
+-   **Grade 5** Death related to AE.
+
+**Relatedness**
+
+Relatedness refers to the relationship of the AE to the intervention. COMET rates relatedness from not related to definitely related.
+
+-   **Not Related** The AE is clearly NOT related to the intervention
+
+-   **Possibly Related** The AE may be related to the intervention
+
+-   **Definitely Related** The AE is clearly related to the intervention
+
+**Definitions**
+
+-   **Adverse Event** Any untoward or unfavorable medical occurrence in a human subject participant, including any abnormal sign, symptom, or disease, temporally associated with the participants' involvement in the research, whether or not considered related to participation in the research.
+
+-   **Event of Interest** Incidental findings or events uncovered during baseline testing not directly attributable to the study. It is often unclear if the event is new onset. Most are pre-existing and asymptomatic i.e., asymptomatic ST segment depression on a maximal exercise test.
+
+-   **System Organ Class (SOC)** The highest level of the MedDRA1 hierarchy, also referred to as System Organ Classe (SOC), is identified by anatomical or physiological system, etiology, or purpose (e.g., SOC Investigations for laboratory test results). CTCAE terms are grouped by MedDRA Primary SOCs. Within each SOC, AEs are listed and accompanied by descriptions of severity (Grade).
+
+-   **Preferred Term** A term that is a unique representation of a specific event used for medical documentation and scientific analyses. Each CTCAE v4.0 term is a MedDRA LLT (Lowest Level Term).
+
+\newpage
+
+## Table 7a: Incidence of Adverse Events by Preferred Term
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_6_events, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+adverse_events_6 <- adverse_event_dsmc %>%
+  select(Related, ctcae_term) %>%
+  rename("Preferred Term" = ctcae_term)
+
+
+gtsummary::tbl_summary(adverse_events_6,
+                       by = Related,
+                       sort = everything() ~ "frequency") %>%
+  modify_table_body(~.x %>% dplyr::relocate(stat_2, .after = stat_3)) %>%
+  modify_header(label ~ "Adverse Events") %>%
+  as_flex_table() %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines(., "Total Events") %>%
+  add_footer_lines(., "N - total number of events") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+
+ 
+```
+
+\newpage
+
+## Table 7b: Percent Incidence of Adverse Events by SOC
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_6_participants_soc, echo=FALSE, warning=FALSE, message=FALSE}
+
+#This section was adopted on 7/6/22 with some "creative" coding to deal with gtsummary's limitations
+#follow the comments to see what is responsible 
+
+#Create a dataframe with every unique adverse event experiences i.e. if a participant experienced the same AE twice it is removed
+#Format the data frame to use gtsummary
+adverse_events_6_by_participant <- adverse_event_dsmc %>%
+  select(record_id, Related, ctcae_category) %>%
+  unique(.) %>%     #Remove any adverse events if a participant has had the same ae twice
+  select(Related, ctcae_category) %>%
+  rename("SOC" = ctcae_category)
+
+#Create the gtsummary formatted table
+adverse_events_6_by_participant <- gtsummary::tbl_summary(adverse_events_6_by_participant,
+                       by = Related, 
+                       statistic = list(all_categorical() ~ c("{n}")),
+                      sort = everything() ~ "frequency")
+
+#Isolate the table section of the gtsummary table and change statistics
+#The gtsummary package is limited with available statistic calculation
+#modify_table isolates the table from the gtsummary list and changes each statistic to be n (n/number randomized)
+modify_table <- adverse_events_6_by_participant$table_body %>%
+  mutate(across(contains("stat"), ~ case_when(!is.na(.x) ~ paste0(.x," (",as.character(round(as.numeric(.x)/nrow(randomized)*100), digits = 0),"%)"))))
+
+#Insert the modified table back into gtsummary list
+adverse_events_6_by_participant$table_body <- modify_table 
+
+#Output table
+adverse_events_6_by_participant %>%
+  modify_header(label ~ "Adverse Events") %>%
+  modify_footnote(all_stat_cols() ~ "n (%)") %>%
+  modify_table_body(~.x %>% dplyr::relocate(stat_2, .after = stat_3)) %>%
+  as_flex_table() %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Total Enrolled = ",nrow(randomized))) %>% 
+  add_header_lines(., "Percent Incidence of Adverse Event") %>%
+  add_footer_lines(., "N - Number of listed adverse event. \n(%) - Percent of randomized participants who have experienced the listed adverse event, where a participant's repeat adverse events are removed so as to reflect total percentage of study population experiencing an adverse event.  ") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+  
+
+
+ 
+```
+
+\newpage
+
+## Table 7c: Percent Incidence of Adverse Events by Preferred Term
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+```{r table_6_participants_term, echo=FALSE, warning=FALSE, message=FALSE}
+
+#This section was adopted on 7/6/22 with some "creative" coding to deal with gtsummary's limitations
+#follow the comments to see what is responsible 
+
+#Create a dataframe with every unique adverse event experiences i.e. if a participant experienced the same AE twice it is removed
+#Format the data frame to use gtsummary
+adverse_events_6_by_participant <- adverse_event_dsmc %>%
+  select(record_id, Related, ctcae_term) %>%
+  unique(.) %>%     #Remove any adverse events if a participant has had the same ae twice
+  select(Related, ctcae_term) %>%
+  rename("Preferred Term" = ctcae_term)
+
+#Create the gtsummary formatted table
+adverse_events_6_by_participant <- gtsummary::tbl_summary(adverse_events_6_by_participant,
+                       by = Related, 
+                       statistic = list(all_categorical() ~ c("{n}")),
+                       sort = everything() ~ "frequency") 
+
+#Isolate the table section of the gtsummary table and change statistics
+#The gtsummary package is limited with available statistic calculation
+#modify_table isolates the table from the gtsummary list and changes each statistic to be n (n/number randomized)
+modify_table <- adverse_events_6_by_participant$table_body %>%
+  mutate(across(contains("stat"), ~ case_when(!is.na(.x) ~ paste0(.x," (",as.character(round(as.numeric(.x)/nrow(randomized)*100), digits = 0),"%)"))))
+
+#Insert the modified table back into gtsummary list
+adverse_events_6_by_participant$table_body <- modify_table 
+
+#Output table
+adverse_events_6_by_participant %>%
+  modify_header(label ~ "Adverse Events") %>%
+  modify_footnote(all_stat_cols() ~ "n (%)") %>%
+  modify_table_body(~.x %>% dplyr::relocate(stat_2, .after = stat_3)) %>%
+  as_flex_table() %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Total Enrolled = ",nrow(randomized))) %>% 
+  add_header_lines(., "Percent Incidence of Adverse Event") %>%
+  add_footer_lines(., "N - Number of listed adverse event. \n(%) - Percent of randomized participants who have experienced the listed adverse event, where a participant's repeat adverse events are removed so as to reflect total percentage of study population experiencing an adverse event.  ") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+  
+
+
+ 
+```
+
+
+\newpage
+
+## Table 7d: Incidence of Events of Interest by Preferred Term
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_6_events_eoi, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+adverse_events_6_eoi <- eoi_dsmc %>%
+  select(Related, ctcae_term) %>%
+  rename("Preferred Term" = ctcae_term)
+
+
+gtsummary::tbl_summary(adverse_events_6_eoi,
+                       by = Related,
+                       sort = everything() ~ "frequency") %>%
+  modify_header(label ~ "Events of Interest") %>%
+  as_flex_table() %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines(., "Total Events") %>%
+  add_footer_lines(., "N - total number of events") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+
+ 
+```
+
+\newpage
+
+## Table 7e: Percent Incidence of Event of Interest
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_6d, echo=FALSE, warning=FALSE, message=FALSE}
+
+#This section was adopted on 7/6/22 with some "creative" coding to deal with gtsummary's limitations
+#follow the comments to see what is responsible 
+
+#Create a dataframe with every unique adverse event experiences i.e. if a participant experienced the same AE twice it is removed
+#Format the data frame to use gtsummary
+table_6d <- eoi_dsmc %>%
+  mutate("SOC and Preferred Term" = paste(ctcae_category,"-",ctcae_term)) %>%
+  select(record_id, Related, ctcae_term) %>%
+  unique(.) %>%     #Remove any adverse events if a participant has had the same ae twice
+  select(Related, ctcae_term) %>%
+  rename("Preferred Term" = ctcae_term)
+
+#Create the gtsummary formatted table
+table_6d <- gtsummary::tbl_summary(table_6d,
+                       by = Related, 
+                       statistic = list(all_categorical() ~ c("{n}")),
+                       sort = everything() ~ "frequency") 
+
+#Isolate the table section of the gtsummary table and change statistics
+#The gtsummary package is limited with available statistic calculation
+#modify_table isolates the table from the gtsummary list and changes each statistic to be n (n/number consented)
+modify_table <- table_6d$table_body %>%
+  mutate(across(contains("stat"), ~ case_when(!is.na(.x) ~ paste0(.x," (",as.character(round(as.numeric(.x)/nrow(consented)*100), digits = 0),"%)"))))
+
+#Insert the modified table back into gtsummary list
+table_6d$table_body <- modify_table 
+
+#Output table
+table_6d %>%
+  modify_header(label ~ "Events of Interest") %>%
+  modify_footnote(all_stat_cols() ~ "n (%)") %>%
+  as_flex_table() %>%
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Total Consented = ",nrow(consented))) %>% 
+  add_header_lines(., "Percent Incidence of Events of Interest") %>%
+  add_footer_lines(., "N - Number of listed events of interest. \n(%) - Percent of consented participants who have experienced the listed event of interest, where a participant's repeat event of interests are removed so as to reflect total percentage of study population experiencing an event of interest.  ") %>%
+  set_table_properties(., layout = "autofit", width = 1)
+  
+
+
+ 
+```
+
+\newpage
+
+## Table 8a: Severity of Adverse Events by SOC
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_7a_SOC, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+adverse_events_7 <- adverse_event_dsmc %>%
+  rename("SOC" = ctcae_category) %>% 
+  select(Severity, "SOC")
+
+
+gtsummary::tbl_summary(adverse_events_7,
+                       by = Severity,
+                       sort = everything() ~ "frequency") %>%
+  modify_header(label ~ "Adverse Events") %>%
+  as_flex_table() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+
+
+```
+
+\newpage
+
+
+## Table 8b: Severity of Adverse Events by Preferred Term
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_7a, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+adverse_events_7 <- adverse_event_dsmc %>%
+  rename("Preferred Term" = ctcae_term) %>% 
+  select(Severity, "Preferred Term")
+
+
+gtsummary::tbl_summary(adverse_events_7,
+                       by = Severity,
+                       sort = everything() ~ "frequency") %>%
+  modify_header(label ~ "Adverse Events") %>%
+  as_flex_table() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+
+
+```
+
+\newpage
+
+## Table 8c: Severity of Event of Interest by Preferred Term
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r table_7b, echo=FALSE, warning=FALSE, message=FALSE}
+
+
+eoi_7 <- eoi_dsmc %>%
+  rename("Preferred Term" = ctcae_term) %>% 
+  select(Severity, "Preferred Term")
+
+
+gtsummary::tbl_summary(eoi_7,
+                       by = Severity,
+                       sort = everything() ~ "frequency") %>%
+  modify_header(label ~ "Adverse Events") %>%
+  as_flex_table() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+
+
+```
+
+\newpage
+
+## Listing 3a: Serious Adverse Events
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_1a, echo=FALSE, warning=FALSE, message=FALSE}
+
+# To do: need to update names and add in outcome column
+
+listing_1 <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_was_ae_serious == 1) %>%
+  left_join(., comet_scienctist_markdown, by = "record_id") %>%
+  select(comet_study_id, ae_date_of_onset, ae_date_ceased, Related, Outcome, `SOC and Preferred Term`, ae_dsmc_summary) %>%
+  rename("ID" = comet_study_id, "Summary" = ae_dsmc_summary, "Date of Onset" = ae_date_of_onset, "Date Ceased" = ae_date_ceased)
+
+if(nrow(listing_1) > 0) {
+  listing_1 %>% 
+    flextable() %>% 
+    # add_header_lines(., paste0("Total N = ",completed_baseline)) %>% 
+    # add_header_lines(., "Treatment Duration for All Participants") %>% 
+    theme_booktabs() %>%
+    set_table_properties(., layout = "autofit", width = 1)
+} else {
+  cat("There have been no serious adverse events")
+}
+
+
+```
+
+\newpage
+
+## Listing 3b: Serious Events of Interest
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_1b, echo=FALSE, warning=FALSE, message=FALSE}
+
+# To do: need to update names and add in outcome column
+
+listing_1 <- eoi_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_was_ae_serious == 1) %>%
+  left_join(., comet_scienctist_markdown, by = "record_id") %>%
+  select(comet_study_id, ae_date_of_onset, ae_date_ceased, Related, Outcome, `SOC and Preferred Term`, ae_dsmc_summary) %>%
+  rename("ID" = comet_study_id, "Summary" = ae_dsmc_summary, "Date of Onset" = ae_date_of_onset, "Date Ceased" = ae_date_ceased)
+
+if(nrow(listing_1) > 0) {
+  listing_1 %>% 
+    flextable() %>% 
+    # add_header_lines(., paste0("Total N = ",completed_baseline)) %>% 
+    # add_header_lines(., "Treatment Duration for All Participants") %>% 
+    theme_booktabs() %>%
+    set_table_properties(., layout = "autofit", width = 1)
+} else {
+  cat("There have been no serious adverse events")
+}
+
+
+```
+
+\newpage
+
+## Listing 4: Deaths
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_2, echo=FALSE, warning=FALSE, message=FALSE}
+
+# To do: need to update names and add in outcome column
+
+listing_2 <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_did_participant_die == 1) %>% 
+  left_join(., comet_scienctist_markdown, by = "record_id") %>%
+
+  rename("Participant ID" = comet_study_id, "Date of Death" = ae_date_of_death, "Cause of Death" = ae_cause_of_death) %>%
+  select("Participant ID", "Date of Death", "Cause of Death", Related) 
+  
+
+if(nrow(listing_2) > 0) {
+  listing_2 %>% 
+    flextable() %>% 
+    autofit() %>%
+    theme_booktabs()
+} else {
+  cat("There have been no deaths.")
+}
+
+
+```
+
+\newpage
+
+## Listing 5a: New Adverse Events Related to the Intervention
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_3a, echo=FALSE, warning=FALSE, message=FALSE}
+####This is actually listing_4a. A protocol deviation listing was added above, and all code below was kept consistent to save time.
+
+listing_3a <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_date >= date_of_last_report) %>%
+  filter(ae_is_study_related != 0) %>%
+  left_join(., comet_scienctist_markdown, by = "record_id") %>%
+  arrange(desc(.$ae_is_study_related), ae_date) %>%
+  select(comet_study_id, ae_date, Related, Outcome, Severity, `SOC and Preferred Term`, ae_dsmc_summary) %>%
+  rename("ID" = comet_study_id,"Date" = ae_date, "Summary" = ae_dsmc_summary) 
+
+
+listing_3a %>% 
+  flextable() %>% 
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Adverse Events Related to the Intervention Since Date of Last Report (",date_of_last_report,")")) %>% 
+  theme_booktabs() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+```
+
+\newpage
+
+
+### New Adverse Events Related to the Intervention - Presentation Version
+```{r listing_3a_powerpoint, echo=FALSE, warning=FALSE, message=FALSE, fig.width=10}
+#' 20230802 This was added to for the presentation of AEs only. It's not included in the report, but is used to generate a table of AEs that are 
+#' easy to show during the powerpoint
+
+listing_3a <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_date >= date_of_last_report) %>%
+  filter(ae_is_study_related != 0) %>%
+  left_join(., comet_scienctist_markdown, by = "record_id") %>%
+  arrange(desc(.$ae_is_study_related), ae_date) %>%
+  select(ae_date, Related, Outcome, Severity, ae_event) %>%
+  rename("Date" = ae_date, "Event" = ae_event) 
+
+
+listing_3a %>% 
+  flextable() %>% 
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Adverse Events Related to the Intervention Since Date of Last Report (",date_of_last_report,")")) %>% 
+  theme_booktabs() %>%
+  set_table_properties(., layout = "autofit")
+
+
+
+```
+
+\newpage
+
+
+## Listing 5b: New Adverse Events Not Related to Intervention
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_3b, echo=FALSE, warning=FALSE, message=FALSE}
+
+listing_3b <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_date >= date_of_last_report) %>%
+  filter(ae_is_study_related == 0) %>%
+  left_join(., comet_scienctist_markdown, by = "record_id") %>%
+  arrange(ae_date) %>%
+  select(comet_study_id, ae_date, Related, Outcome, Severity, `SOC and Preferred Term`, ae_dsmc_summary) %>%
+  rename("ID" = comet_study_id,"Date" = ae_date, "Summary" = ae_dsmc_summary) 
+
+
+
+listing_3b %>% 
+  flextable() %>% 
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Adverse Events Not Related to the Intervention Since Date of Last Report (",date_of_last_report,")")) %>% 
+  theme_booktabs() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+```
+
+\newpage
+## Listing 5c: New Events of Interest
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_3c, echo=FALSE, warning=FALSE, message=FALSE}
+
+listing_3c <- eoi_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(ae_date >= date_of_last_report) %>%
+  left_join(., comet_scienctist_markdown, by = "record_id") %>%
+  mutate(presentweeknum = as.numeric(presentweeknum)) %>%
+  arrange(desc(.$ae_is_study_related), ae_date) %>%
+  select(comet_study_id, ae_date, Related, Outcome, Severity, `SOC and Preferred Term`, ae_dsmc_summary) %>%
+  rename("ID" = comet_study_id,"Date" = ae_date, "Summary" = ae_dsmc_summary) 
+
+
+
+listing_3c %>% 
+  flextable() %>% 
+  align(align = "center", part = "header") %>%
+  add_header_lines(., paste0("Events of Interest Since Date of Last Report (",date_of_last_report,")")) %>% 
+  theme_booktabs() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+```
+
+\newpage
+
+## Listing 6a: All Adverse Events
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_4a, echo=FALSE, warning=FALSE, message=FALSE}
+
+listing_4a <- adverse_event_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  left_join(., comet_scienctist_markdown, by = "record_id") %>%
+  rename("ID" = comet_study_id, "Date" = ae_date) %>%
+  arrange(desc(.$ae_is_study_related), Date) %>%
+  select("ID", Date, "SOC and Preferred Term", Related, Severity, Serious, Outcome) 
+
+
+listing_4a %>% 
+  flextable() %>% 
+  align(align = "center", part = "header") %>%
+  add_header_lines(., "All Adverse Events") %>% 
+  theme_booktabs() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+```
+
+\newpage
+
+## Listing 6b: All Events of Interest
+
+Date as of: `r date_as_of`
+
+\newline
+
+Date of report: `r format(Sys.time(), '%b %d, %Y')`
+
+\newline
+
+```{r listing_4b, echo=FALSE, warning=FALSE, message=FALSE}
+
+listing_4b <- eoi_dsmc %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  left_join(., comet_scienctist_markdown, by = "record_id") %>%
+  rename("ID" = comet_study_id, "Date" = ae_date) %>%
+  arrange(desc(.$ae_is_study_related), Date) %>%
+  select("ID", Date, "SOC and Preferred Term", Related, Severity, Serious, Outcome) 
+
+
+listing_4b %>% 
+  flextable() %>% 
+  align(align = "center", part = "header") %>%
+  add_header_lines(., "All Events of Interest") %>% 
+  theme_booktabs() %>%
+  set_table_properties(., layout = "autofit", width = 1)
+
+
+```
+
+\newpage

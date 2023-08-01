@@ -1,0 +1,460 @@
+---
+output: 
+  html_document:
+    toc: TRUE
+---
+
+```{r setup, include=FALSE}
+##### Declare Libraries #####
+library(rio)
+library(httr)
+library(lubridate)
+library(tidyverse)
+library(htmlTable)
+library(R.utils)
+library(gtools)
+library(gt)
+library(DT)
+
+if(Sys.info()["nodename"]=="workstation_1" & Sys.info()["user"]=="study_coordinator_2") {
+  root_p <- file.path("drive")
+  root_server_dir <- file.path(root_p,"study_dir_a")
+  python_cmd_prefix <- "py "
+} else if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+  root_p <- ""
+  # root_server_dir <- file.path(root_p,"ADC_Data")
+  root_server_dir <- file.path(root_p,"COMET")
+  python_cmd_prefix <- "python "
+}
+  
+  ###### Load Directories #####
+  load(file.path(root_server_dir,'study_dir_a','COMET','data','clean','directories.Rdata'))
+  
+  ###### Load Data #####
+  load(file.path(data_dir,'clean','comet_clean.Rdata'))
+
+  ###### Load Personal Trainer Database #######
+  trainer_db <- import(file.path(data_dir,'ymca_liason_email','PHITPersonalTrainers.csv'))
+
+  trainer_db_date <- file.info(file.path(data_dir,'ymca_liason_email','PHITPersonalTrainers.csv')) %>%
+    mutate(date = format(mtime, format = "%m/%d/%y")) %>%
+    pull(date)
+  
+  ###### Load Personal Trainer List #####
+  trainer_list <- import(file.path(data_dir,'ymca_liason_email','PHITPersonalTrainers.csv')) %>%
+    filter(is.na(redcap_repeat_instance)) %>%
+    select(record_id, first_name, last_name, work_email, trainer_status, organization, location_y)
+  
+  ##### COMET database (test entry removed) ######
+comet_baseline <- comet %>%
+  filter(redcap_event_name == "baseline_arm_1") %>%
+  mutate(Status = case_when(intervention_status == 1 ~ "Actively on intervention",
+                            intervention_status == 2 ~ "Successfully completed",
+                            intervention_status == 3 ~ "Withdrawn willing to complete testing",
+                            intervention_status == 4 ~ "Withdrawn unwilling to complete testing",
+                            intervention_status == 5 ~ "Lost to Follow-up",
+                            intervention_status == 6 ~ "Terminated Early")) %>%
+  mutate(`Group` = case_when(group == 2 ~ "Toning",
+                             group == 3 ~ "Endurance",
+                             group == 4 ~ "Resistance",
+                             group == 5 ~ "Combo")) 
+    
+    
+  ##### Gym List #########
+  gym_list <- import(file.path(data_dir,'ymca_liason_email','gym_list.xlsx'))
+
+  
+  #Options
+  options(digits = 2)
+
+```
+
+```{r logo, echo = FALSE,  fig.show = "hold", out.width = "25%", fig.align = "center"}
+    knitr::include_graphics(file.path(data_dir,'participant_email','COMETLogo.jpg'))
+  
+```
+
+
+**Hi YMCA Liason**<br>
+
+Building this report will be an ongoing project. Please let me know if there is anything we can add to this report to make your job easier.
+
+This report was generated on `r today()`.
+
+### Participant Intervention Fidelity Checks
+
+As per chapter 19 of the MOP, a fidelity check is expected to be performed for each participant 5 times. Schedule fidelity checks in order of optimal date.
+
+Optimal dates are set for the middle of the range with the exception of check 2 which is set for week 4. Combo and resistance groups check #3 should occur during week 26 when 1-RMs are scheduled. All of these considerations are taken into account in the optimal date. 
+
+ 1. Orientation
+ 2. Weeks 2-13 (Best performed at week 4)
+ 3. weeks 13-26 (For resistance and combo group, perform at week 26)
+ 4. weeks 27-39
+ 5. weeks 40-52 
+ 
+<center>
+```{r pt_fidelity, echo=FALSE}
+
+expected_checks <- comet %>%
+  filter(!is.na(comet_interventionstart)) %>%
+  filter(redcap_event_name == "baseline_arm_1") %>%
+  mutate(end_date = case_when(intervention_status == 2 ~ int_date_complete,
+                              intervention_status == 3 | intervention_status == 4 ~ int_withdrew_date,
+                              intervention_status == 5 ~ int_losttofollowup_date)) %>%
+  mutate(check_1 = comet_interventionstart) %>%
+  mutate(check_2 = case_when(is.na(end_date) | end_date > comet_interventionstart + 7 * 13 ~ comet_interventionstart + 7 * 12)) %>%
+  mutate(check_3 = case_when(is.na(end_date) | end_date > comet_interventionstart + 7 * 26 ~ comet_interventionstart + 7 * 25)) %>%
+  mutate(check_4 = case_when(is.na(end_date) | end_date > comet_interventionstart + 7 * 39 ~ comet_interventionstart + 7 * 38)) %>%
+  mutate(check_5 = case_when(is.na(end_date) | end_date > comet_week52date ~ comet_week52date)) %>%
+  select(record_id, check_1, check_2, check_3, check_4, check_5) %>%
+  pivot_longer(., cols = c("check_1","check_2","check_3","check_4","check_5")) %>%
+  filter(value < today() + 7*12) %>%
+  mutate(name = case_when(name == "check_1" ~ 1,
+                          name == "check_2" ~ 2,
+                          name == "check_3" ~ 3,
+                          name == "check_4" ~ 4,
+                          name == "check_5" ~ 5))
+
+checks <- fidelity_check %>% 
+  filter(redcap_repeat_instrument == "intervention_fidelity_check")
+
+pt_fidelity <- anti_join(expected_checks, checks, by = c( "name" = "redcap_repeat_instance", "record_id" = "record_id")) %>%
+  arrange(value) %>%
+  left_join(., comet_baseline, by = "record_id") %>%
+  mutate(gym_location = as.numeric(as.character(gym_location))) %>%
+  left_join(., trainer_list, by = c("gym_trainer" = "record_id")) %>%
+  left_join(., gym_list, by = c("gym_location" = "id")) %>%
+  mutate(Trainer = paste(first_name, last_name)) %>%
+  mutate(value = value) %>%
+  mutate(`Optimal Date` = case_when(name == 1 ~ value,
+                                    name == 2 ~ value - 7*9,
+                                    name == 3 & group > 3 ~ value,
+                                    name == 3 & group <= 3 ~ value - 7*5,
+                                    name >= 4 ~ value - 7*5))  %>%
+  select(comet_study_id, name, `Optimal Date`,  Trainer, gym, Status, Group, presentweeknum, value) %>%
+  rename("COMET ID" = comet_study_id, "Fidelity Check Number" = name, "Final Date" = value, "Gym" = gym) %>%
+  arrange(`Optimal Date`)
+
+
+  if(nrow(pt_fidelity)>0)
+  {
+    pt_fidelity %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>% 
+      htmlTable(., 
+                rnames = F,
+      )
+    
+  } else {
+    cat(paste0("No Participant Fidelity Checks to Complete"))
+  }
+    
+```
+</center><br>
+
+### Trainer Intervention Fidelity Checks
+
+According to Ch. 19.3.3 of the MOP, each trainer will also be observed on a quarterly basis. Be sure to rotate groups if a trainer is certified on multiple groups. All of these data are pulled manually from the "PHIT Personal Trainers v2" database. The last download was `r trainer_db_date`.
+ 
+<center>
+```{r trainer_fidelity, echo=FALSE}
+
+
+last_fidelity_check <- trainer_db %>%
+  filter(redcap_repeat_instrument == "comet_intervention_fidelity_check") %>%
+  arrange(desc(tr_comet_fid_date)) %>%
+  filter(!duplicated(record_id)) %>%
+  select(contains("tr_comet") | contains("record_id"))
+
+trainer_certs <- trainer_db %>%
+  filter(redcap_repeat_instrument == "") %>% 
+  mutate(endurance = case_when(comet_endurance == 1 ~ "Endurance",
+                               comet_endurance == 0 ~ "")) %>% 
+  mutate(resistance = case_when(comet_wt == 1 ~ "Resistance",
+                                comet_wt == 0 ~ "")) %>%
+  mutate(combo = case_when(comet_combo == 1 ~ "Combo",
+                                comet_combo == 0 ~ "")) %>%
+  mutate(cf = case_when(comet_cf == 1 ~ "Toning",
+                                comet_cf == 0 ~ "")) %>%
+  select(record_id, endurance, resistance, combo, cf) %>%
+  replace_na(list(endurance = "", resistance = "", combo = "", cf = ""))  %>%
+  mutate(certs = paste(endurance, resistance, combo, cf))
+
+
+active <- comet %>%
+  filter(redcap_event_name == "baseline_arm_1") %>%
+  filter(intervention_status == 1) %>%
+  mutate(Status = case_when(intervention_status == 1 ~ "Actively on intervention",
+                            intervention_status == 2 ~ "Successfully completed",
+                            intervention_status == 3 ~ "Withdrawn willing to complete testing",
+                            intervention_status == 4 ~ "Withdrawn unwilling to complete testing",
+                            intervention_status == 5 ~ "Lost to Follow-up",
+                            intervention_status == 6 ~ "Terminated Early"))  %>%
+  filter(!duplicated(gym_trainer)) %>%
+  mutate(gym_location = as.numeric(as.character(gym_location))) %>%
+  left_join(., trainer_list, by = c("gym_trainer" = "record_id")) %>%
+  left_join(., gym_list, by = c("gym_location" = "id")) %>%
+  mutate(Trainer = paste(first_name, last_name)) %>%
+  select(gym_trainer, Trainer, gym) %>%
+  left_join(., last_fidelity_check, by = c("gym_trainer" = "record_id")) %>%
+  mutate(`Due Date` = ymd(tr_comet_fid_date) + 91) %>%
+  mutate(`Group of Last Check` = case_when(tr_comet_fid_group == 2 ~ "Toning",
+                                           tr_comet_fid_group == 3 ~ "Endurance",
+                                           tr_comet_fid_group == 4 ~ "Resistance",
+                                           tr_comet_fid_group == 5 ~ "Combo")) %>%
+  arrange(`Due Date`) %>%
+  select(gym_trainer, Trainer, gym, `Due Date`, tr_comet_fid_date, `Group of Last Check`) %>%
+  left_join(., trainer_certs, by = c("gym_trainer" = "record_id")) %>%
+  select(Trainer, gym, `Due Date`, tr_comet_fid_date, `Group of Last Check`, certs) %>%
+  rename(Certifications = certs, `Date of Last Check` = tr_comet_fid_date, Gym = gym)
+
+
+  if(nrow(active)>0)
+  {
+    active %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>% 
+      htmlTable(., 
+                rnames = F,
+      )
+    
+  } else {
+    cat(paste0("No Participant Fidelity Checks to Complete"))
+  }
+  
+    
+
+```
+</center><br>
+
+### Yearly Certification
+
+See details about trainer certification in MOP Ch. 19.2. Yearly recertifications due in the next three months are listed below. Be sure to have the trainer fill out the group-respective "COMET Trainer Fidelity Checkoff," which should be saved to this folder S:/ADC/PHIT/COMET/Intervention/Trainer Orientation/Completed Fidelity Checkoffs and uploaded to the PHIT Personal Trainers v2 REDCap database. Be sure to update the expiration dates under the "Trainer Tracking" page.
+
+<center>
+```{r yearly_cert, echo=FALSE}
+
+#' 1.5.23 - Added active trainers
+#' active_trainers filters for all trainers in the comet database with an enrolled participant. 
+#' And for still active trainers in trainer database. JC
+active_trainers <- comet_baseline %>%
+  filter(intervention_status == 1) %>%
+  select(gym_trainer) %>%
+  unique() %>%
+  left_join(., trainer_list, by = c("gym_trainer" = "record_id")) %>%
+  filter(trainer_status == 1)
+
+#' 1.25.23 Added to filter by active trainers. Line 2 JC
+upcoming_recertifications <- trainer_db %>%
+  filter(record_id %in% active_trainers$gym_trainer) %>%
+  filter(redcap_repeat_instrument == "") %>% 
+  select(first_name, last_name, comet_cf_expire, comet_endurance_expire, comet_wt_expire, comet_combo_expire) %>%
+  pivot_longer(., cols = c("comet_cf_expire","comet_endurance_expire","comet_wt_expire","comet_combo_expire")) %>%
+  mutate(Group = case_when(name == "comet_wt_expire" ~ "Resistance",
+                           name == "comet_cf_expire" ~ "Core & Fusion",
+                           name == "comet_combo_expire" ~ "Combo",
+                           name == "comet_endurance_expire" ~ "Endurance")) %>%
+  mutate(Trainer = paste(first_name, last_name)) %>%
+  select(Trainer, Group, value) %>%
+  rename(`Due Date` = value) %>%
+  filter(ymd(`Due Date`) < today() + 90) %>%
+  arrange(`Due Date`)
+
+
+
+
+  if(nrow(upcoming_recertifications)>0)
+  {
+    upcoming_recertifications %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>% 
+      htmlTable(., 
+                rnames = F,
+      )
+    
+  } else {
+    cat(paste0("No upcoming recertifications"))
+  }
+  
+    
+
+```
+</center> 
+
+
+
+### Participant Intervention Fidelity Checks - Searchable
+
+As per chapter 19 of the MOP, a fidelity check is expected to be performed for each participant 5 times. Schedule fidelity checks in order of optimal date.
+
+Optimal dates are set for the middle of the range with the exception of check 2 which is set for week 4. Combo and resistance groups check #3 should occur during week 26 when 1-RMs are scheduled. All of these considerations are taken into account in the optimal date. 
+
+ 1. Orientation
+ 2. Weeks 2-13 (Best performed at week 4)
+ 3. weeks 13-26 (For resistance and combo group, perform at week 26)
+ 4. weeks 27-39
+ 5. weeks 40-52 
+ 
+<center>
+```{r pt_fidelity_dt, echo=FALSE}
+
+pt_fidelity %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE,
+            extensions = 'Buttons',
+            options = list(columnDefs =
+                             list(list(className = 'dt-center',
+                                       targets = "_all")),
+                           pageLength = 10,
+                           dom = 'Bfrtip',
+                           buttons = c('csv')))
+
+    
+```
+</center><br>
+
+
+### Trainer Intervention Fidelity Checks - Searchable
+
+According to Ch. 19.3.3 of the MOP, each trainer will also be observed on a quarterly basis. Be sure to rotate groups if a trainer is certified on multiple groups. All of these data are pulled manually from the "PHIT Personal Trainers v2" database. The last download was `r trainer_db_date`.
+ 
+<center>
+```{r trainer_fidelity_dt, echo=FALSE}
+
+
+last_fidelity_check <- trainer_db %>%
+  filter(redcap_repeat_instrument == "comet_intervention_fidelity_check") %>%
+  arrange(desc(tr_comet_fid_date)) %>%
+  filter(!duplicated(record_id)) %>%
+  select(contains("tr_comet") | contains("record_id"))
+
+trainer_certs <- trainer_db %>%
+  filter(redcap_repeat_instrument == "") %>% 
+  mutate(endurance = case_when(comet_endurance == 1 ~ "Endurance",
+                               comet_endurance == 0 ~ "")) %>% 
+  mutate(resistance = case_when(comet_wt == 1 ~ "Resistance",
+                                comet_wt == 0 ~ "")) %>%
+  mutate(combo = case_when(comet_combo == 1 ~ "Combo",
+                                comet_combo == 0 ~ "")) %>%
+  mutate(cf = case_when(comet_cf == 1 ~ "Toning",
+                                comet_cf == 0 ~ "")) %>%
+  select(record_id, endurance, resistance, combo, cf) %>%
+  replace_na(list(endurance = "", resistance = "", combo = "", cf = ""))  %>%
+  mutate(certs = paste(endurance, resistance, combo, cf))
+
+
+active <- comet %>%
+  filter(redcap_event_name == "baseline_arm_1") %>%
+  filter(intervention_status == 1) %>%
+  mutate(Status = case_when(intervention_status == 1 ~ "Actively on intervention",
+                            intervention_status == 2 ~ "Successfully completed",
+                            intervention_status == 3 ~ "Withdrawn willing to complete testing",
+                            intervention_status == 4 ~ "Withdrawn unwilling to complete testing",
+                            intervention_status == 5 ~ "Lost to Follow-up",
+                            intervention_status == 6 ~ "Terminated Early"))  %>%
+  filter(!duplicated(gym_trainer)) %>%
+  mutate(gym_location = as.numeric(as.character(gym_location))) %>%
+  left_join(., trainer_list, by = c("gym_trainer" = "record_id")) %>%
+  left_join(., gym_list, by = c("gym_location" = "id")) %>%
+  mutate(Trainer = paste(first_name, last_name)) %>%
+  select(gym_trainer, Trainer, gym) %>%
+  left_join(., last_fidelity_check, by = c("gym_trainer" = "record_id")) %>%
+  mutate(`Due Date` = ymd(tr_comet_fid_date) + 91) %>%
+  mutate(`Group of Last Check` = case_when(tr_comet_fid_group == 2 ~ "Toning",
+                                           tr_comet_fid_group == 3 ~ "Endurance",
+                                           tr_comet_fid_group == 4 ~ "Resistance",
+                                           tr_comet_fid_group == 5 ~ "Combo")) %>%
+  arrange(`Due Date`) %>%
+  select(gym_trainer, Trainer, gym, `Due Date`, tr_comet_fid_date, `Group of Last Check`) %>%
+  left_join(., trainer_certs, by = c("gym_trainer" = "record_id")) %>%
+  select(Trainer, gym, `Due Date`, tr_comet_fid_date, `Group of Last Check`, certs) %>%
+  rename(Certifications = certs, `Date of Last Check` = tr_comet_fid_date, Gym = gym)
+
+
+active %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE,
+            extensions = 'Buttons',
+            options = list(columnDefs =
+                             list(list(className = 'dt-center',
+                                       targets = "_all")),
+                           pageLength = 10,
+                           dom = 'Bfrtip',
+                           buttons = c('csv')))
+  
+    
+
+```
+</center><br>
+
+
+### Yearly Certification - Searchable
+
+See details about trainer certification in MOP Ch. 19.2. Yearly recertifications due in the next three months are listed below. Be sure to have the trainer fill out the group-respective "COMET Trainer Fidelity Checkoff," which should be saved to this folder S:/ADC/PHIT/COMET/Intervention/Trainer Orientation/Completed Fidelity Checkoffs and uploaded to the PHIT Personal Trainers v2 REDCap database. Be sure to update the expiration dates under the "Trainer Tracking" page.
+
+<center>
+```{r yearly_cert_dt, echo=FALSE}
+
+#' 1.5.23 - Added active trainers
+#' active_trainers filters for all trainers in the comet database with an enrolled participant. 
+#' And for still active trainers in trainer database. JC
+active_trainers <- comet_baseline %>%
+  filter(intervention_status == 1) %>%
+  select(gym_trainer) %>%
+  unique() %>%
+  left_join(., trainer_list, by = c("gym_trainer" = "record_id")) %>%
+  filter(trainer_status == 1)
+
+#' 1.25.23 Added to filter by active trainers. Line 2 JC
+upcoming_recertifications <- trainer_db %>%
+  filter(record_id %in% active_trainers$gym_trainer) %>%
+  filter(redcap_repeat_instrument == "") %>% 
+  select(first_name, last_name, comet_cf_expire, comet_endurance_expire, comet_wt_expire, comet_combo_expire) %>%
+  pivot_longer(., cols = c("comet_cf_expire","comet_endurance_expire","comet_wt_expire","comet_combo_expire")) %>%
+  mutate(Group = case_when(name == "comet_wt_expire" ~ "Resistance",
+                           name == "comet_cf_expire" ~ "Core & Fusion",
+                           name == "comet_combo_expire" ~ "Combo",
+                           name == "comet_endurance_expire" ~ "Endurance")) %>%
+  mutate(Trainer = paste(first_name, last_name)) %>%
+  select(Trainer, Group, value) %>%
+  rename(`Due Date` = value) %>%
+  filter(ymd(`Due Date`) < today() + 90) %>%
+  arrange(`Due Date`)
+
+
+upcoming_recertifications %>%
+  datatable(.,
+            rownames = F,
+            filter = "top",
+            class = 'cell-border stripe',
+            editable = TRUE,
+            extensions = 'Buttons',
+            options = list(columnDefs =
+                             list(list(className = 'dt-center',
+                                       targets = "_all")),
+                           pageLength = 10,
+                           dom = 'Bfrtip',
+                           buttons = c('csv')))
+    
+
+```
+</center> 
+
+
+

@@ -1,0 +1,198 @@
+---
+output: pdf_document
+mainfont: Arial
+sansfont: Arial
+fontsize: 12pt
+---
+
+
+```{r setup, include=FALSE}
+#' Development
+#' 5.20.22 Just started making notes on changes. Updated export of exercise prescription in minutes block to only be on Mondays and added lubridate to libraries
+#' 5.20.22 Added video link to pdf JC
+#' 9.27.22 Added conditional statment warning pt of reduction in trainers JC
+
+
+library(tidyverse)
+library(htmlTable)
+library(knitr)
+library(rio)
+library(lubridate)
+knitr::opts_chunk$set(echo = TRUE)
+
+  
+###### Build Root Server #####  
+if(Sys.info()["nodename"]=="workstation_1" & Sys.info()["user"]=="study_coordinator_2") {
+  root_p <- file.path("drive")
+  root_server_dir <- file.path(root_p,"study_dir_a")
+  python_cmd_prefix <- "py "
+} else if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+  root_p <- ""
+  # root_server_dir <- file.path(root_p,"ADC_Data")
+  root_server_dir <- file.path(root_p,"COMET")
+  python_cmd_prefix <- "python "
+}
+  
+
+###### Load Data #####
+load(file.path(root_server_dir,'study_dir_a','COMET','data','clean','directories.Rdata'))
+
+load(file.path(data_dir,'participant_email','current_participant.Rdata'))
+
+logo <- file.path(data_dir,'participant_email','COMETLogo.jpg')
+
+weekly_cf_vid <- import(file.path(data_dir,'participant_email','cf_schedule','cf_schedule.xlsx')) %>%
+  mutate(week = week(date), year = year(date)) %>%
+  filter(week == week(today()) & year == year(today()))
+
+
+```
+
+\begin{center}
+
+  \includegraphics[width = 2cm, height = 2cm]{`r logo`}
+
+\end{center}
+
+
+# `r current$scrn_fname` `r current$scrn_lname`'s Week `r current$presentweeknum` Exercise Prescription
+
+
+```{r mintues, include=FALSE}
+
+  week <- current$presentweeknum
+
+  st_progression <- current_exercise_prescription$cf_duration
+  
+  pt_sessions <- case_when(week <= 26 ~ 3,
+                           week > 26 & week <= 36 ~ 2,
+                           week > 36 ~ 1)
+  
+  unsupervised_sessions <- 5 - pt_sessions
+  
+  video_sessions <- 3
+  
+  paper_sessions <- 2
+  
+  
+  max <- current_exercise_prescription$hr_max
+  
+  prescription_df <- data.frame(current$comet_study_id, as.numeric(week), st_progression, pt_sessions, unsupervised_sessions, video_sessions, paper_sessions, max)
+  
+  # if(file.exists(file.path(data_dir,'participant_email','sent_prescriptions',paste0('146904_',current$comet_study_id,'.csv')))==T) {
+  #   
+  #   prescription_record <- import(file.path(data_dir,'participant_email','sent_prescriptions',paste0('146904_',current$comet_study_id,'.csv')))
+  #   prescription_record <- bind_rows(prescription_record, prescription_df)
+  #   
+  #   if(wday(today()) == 2){
+  #     export(prescription_record, file.path(data_dir,'participant_email','sent_prescriptions',paste0('146904_',current$comet_study_id,'.csv')))
+  #   }
+  # } else {
+  #   export(prescription_df, file.path(data_dir,'participant_email','sent_prescriptions',paste0('146904_',current$comet_study_id,'.csv')))
+  # }
+  
+
+```
+`r if(week == 25 | week == 26){paste0("In ",27-week," week(s) you will change to working with your trainer twice per week. Your total exercise goals will not change. We suggest having a conversation with your traner to prepare for this change.")}`
+
+`r if(week == 35 | week == 36){paste0("In ",37-week," week(s) you will change to working with your trainer once per week. Your total exercise goals will not change. We suggest having a conversation with your traner to prepare for this change.")}`
+
+**Target Total Weekly Exercise Minutes:** `r st_progression` minutes
+
+**Maximum Heart Rate during Exercise:** `r max` bpm
+
+**Number of Personal Trainer Sessions:** `r pt_sessions` sessions
+
+**Number of Unsupervised Sessions:** `r unsupervised_sessions` sessions 
+
+**Video Sessions:** `r video_sessions` sessions
+
+**Paper Sessions:** `r paper_sessions` sessions 
+
+\hfill
+
+**This Week's Video Workout:** `r paste(weekly_cf_vid$exercise_mode_video, weekly_cf_vid$video)`
+
+**Equipment Needed:** `r weekly_cf_vid$additional_equipment`
+
+**Link to Video:** [`r weekly_cf_vid$link`](`r weekly_cf_vid$link`)
+
+
+
+#### Reminders
+
+* Remember to bring your exercise log and record your exercise immediately
+
+* Remember to start and stop your Fitbit watch at the beginning and end of exercise sessions
+
+* Exercise Session Flow
+  + Start the Fitbit and the exercise session
+  + Do the exercise session, checking hr and rpe every 15 min.
+  + Complete the exercise session then stop the Fitbit
+
+* Each month a home exercise workout will be provided. These workouts will consist of 5 to 6 exercises completed in a circuit fashion. Two rounds of the circuit should be completed. This home workout should take about 15 minutes to complete. You are recommended to do these home exercise workouts up to 4 days a week on days that you do not complete your supervised exercise sessions to fulfill your independent exercise minutes.
+
+* From time to time, you may miss a supervised session due to illness, travel, or other commitments. For any missed sessions, it is important to follow some rules regarding rescheduling: 
+  + A maximum of supervised sessions per week consistent with the frequency of supervised sessions at that point in the study
+  + A maximum of 60 minutes per supervised session per day 
+  
+
+``` {r generate_html_ex_prescription, include=FALSE}
+
+html_ex_prescription <- paste0('
+                  <tr>
+                     <td align="left">
+                      <p style="font-family:arial;" style= "font-size:125%;"><b>',current$scrn_fname,'&#8217;s Week ',current$presentweeknum,' Exercise Prescription</b></p>
+                    </td>
+                  </tr>
+                  <tr>
+                     <td align="left">
+                      <p style="font-family:arial;" style= "font-size:100%;">
+                      <br><b>Target Total Weekly Exercise Minutes:</b> ',st_progression,' minutes<br>
+                      <b>Maximum Heart Rate during Exercise:</b> ',max,' bpm<br>
+                      <b>Number of Personal Trainer Sessions:</b> ',pt_sessions,' sessions<br>
+                      <b>Number of Unsupervised Sessions: </b> ',unsupervised_sessions,' sessions<br>
+                      <b>Video Sessions: </b> ',video_sessions,' sessions<br>
+                      <b>Paper Sessions: </b> ',paper_sessions,' sessions<br><br>
+                      
+                      <b>This Week&#8217s Video Workout: </b> ',paste(weekly_cf_vid$exercise_mode_video, weekly_cf_vid$video),'<br>
+                      <b>Equipment Needed: </b> ',weekly_cf_vid$additional_equipment,'<br>
+                      <b>Link to Video: </b> ',weekly_cf_vid$link,'<br><br>
+                      
+                      <b>Reminders </b><br><br>
+                        <ul>
+                          <li>Remember to bring your exercise log and record your exercise immediately</li>
+                          <li>Remember to start and stop your Fitbit watch at the beginning and end of exercise sessions</li>
+                          <li>Exercise Session Flow</li>
+                            <ul> 
+                              <li>Start the Fitbit and the exercise session</li>
+                              <li>Do the exercise session, checking hr and rpe every 15 min.</li>
+                              <li>Complete the exercise session then stop the Fitbit</li>
+                            </ul>
+                          <li> Each month a home exercise workout will be provided. These workouts will consist of 5 to 6 exercises completed in a circuit fashion. Two rounds of the circuit should be completed. This home workout should take about 15 minutes to complete. You are recommended to do these home exercise workouts up to 4 days a week on days that you do not complete your supervised exercise sessions to fulfill your independent exercise minutes.</li>
+                          <li> From time to time, you may miss a supervised session due to illness, travel, or other commitments. For any missed sessions, it is important to follow some rules regarding rescheduling:</li>
+                            <ul>
+                              <li>A maximum of supervised sessions per week consistent with the frequency of supervised sessions at that point in the study</li>
+                              <li>A maximum of 60 minutes per supervised session per day</li>
+                            </ul>
+                          </ul>
+                      </p>
+                    </td>
+                  </tr>'
+)
+
+id_to_check <- current$comet_study_id
+
+to_save <- c('html_ex_prescription','id_to_check')                 
+save(list = to_save, file = file.path(data_dir,'participant_email','current_html_prescription.Rdata'))
+
+
+```
+
+
+
+
+
+
+
+

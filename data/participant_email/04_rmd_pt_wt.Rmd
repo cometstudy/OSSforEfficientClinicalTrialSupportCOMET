@@ -1,0 +1,300 @@
+---
+output: pdf_document
+mainfont: Arial
+sansfont: Arial
+fontsize: 12pt
+---
+
+
+```{r setup, include=FALSE}
+#' Development
+#' 5.20.22 Just started making notes on changes. Updated export of exercise prescription in minutes block to only be on Mondays and added lubridate to libraries
+#' 5.20.22 Added video link to pdf JC
+#'  9.27.22 Added conditional statment warning pt of reduction in trainers JC
+
+
+library(tidyverse)
+library(htmlTable)
+library(knitr)
+library(lubridate)
+library(rio)
+knitr::opts_chunk$set(echo = TRUE)
+
+###### Build Root Server #####  
+if(Sys.info()["nodename"]=="workstation_1" & Sys.info()["user"]=="study_coordinator_2") {
+  root_p <- file.path("drive")
+  root_server_dir <- file.path(root_p,"study_dir_a")
+  python_cmd_prefix <- "py "
+} else if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+  root_p <- ""
+  # root_server_dir <- file.path(root_p,"ADC_Data")
+  root_server_dir <- file.path(root_p,"COMET")
+  python_cmd_prefix <- "python "
+}
+  
+
+###### Load Directories #####
+load(file.path(root_server_dir,'study_dir_a','COMET','data','clean','directories.Rdata'))
+
+
+load(file.path(data_dir,'participant_email','current_participant.Rdata'))
+
+logo <- file.path(data_dir,'participant_email','COMETLogo.jpg')
+
+weekly_cf_vid <- import(file.path(data_dir,'participant_email','cf_schedule','cf_schedule.xlsx')) %>%
+  mutate(week = week(date), year = year(date)) %>%
+  filter(week == week(today()) & year == year(today()))
+
+```
+
+\begin{center}
+
+  \includegraphics[width = 2cm, height = 2cm]{`r logo`}
+
+\end{center}
+
+
+# `r current$scrn_fname` `r current$scrn_lname`'s Week `r current$presentweeknum` Exercise Prescription
+
+
+```{r mintues, include=FALSE}
+
+  week <- current$presentweeknum
+
+  total_time <- 150
+  
+  pt_sessions <- case_when(week <= 26 ~ 3,
+                           week > 26 & week <= 36 ~ 2,
+                           week > 36 ~ 1)
+  
+  #Stopped sending supervised time as of 1/17/22
+   supervised_time <- NA #case_when(week <= 1 ~ 60,
+  #                             week == 2 ~ 75,
+  #                            week == 3 ~ 90,
+  #                           week >= 4 & week <= 26 ~ 90,
+  #                           week > 26 & week <= 36 ~ 60,
+  #                           week > 36 ~ 30)
+  
+  
+  independent_time <- total_time - supervised_time
+  
+  hr_zone_min <- current_exercise_prescription$hrr_min
+  hr_zone_max <- current_exercise_prescription$hrr_max
+  
+  reps <- current_exercise_prescription$wt_reps
+  sets <- current_exercise_prescription$wt_sets
+  intensity <- current_exercise_prescription$wt_intensity
+  
+  bodyweight_sets <- current_exercise_prescription$bodyweight_sets
+  bodyweight_reps <- current_exercise_prescription$bodyweight_reps
+  
+  prescription_df <- data.frame(current$comet_study_id, as.numeric(week), total_time, pt_sessions, supervised_time, independent_time, reps, sets, intensity, bodyweight_sets, bodyweight_reps)
+  
+  if(file.exists(file.path(data_dir,'participant_email','sent_prescriptions',paste0('146904_',current$comet_study_id,'.csv')))==T) {
+    
+    prescription_record <- import(file.path(data_dir,'participant_email','sent_prescriptions',paste0('146904_',current$comet_study_id,'.csv')))
+    prescription_record <- bind_rows(prescription_record, prescription_df)
+    
+    if(wday(today()) == 2){
+      export(prescription_record, file.path(data_dir,'participant_email','sent_prescriptions',paste0('146904_',current$comet_study_id,'.csv')))
+    }
+    
+  } else {
+    export(prescription_df, file.path(data_dir,'participant_email','sent_prescriptions',paste0('146904_',current$comet_study_id,'.csv')))
+  }
+  
+  
+
+```
+
+`r if(week == 25 | week == 26){paste0("In ",27-week," week(s) you will change to working with your trainer twice per week. Your total exercise goals will not change. We suggest having a conversation with your traner to prepare for this change.")}`
+
+`r if(week == 35 | week == 36){paste0("In ",37-week," week(s) you will change to working with your trainer once per week. Your total exercise goals will not change. We suggest having a conversation with your traner to prepare for this change.")}`
+
+**Target Weight Training Sessions:** 2 approximately 35 minute sessions
+
+**Target Core & Fusion Sessions:** 1 video session (~40 min) and 2 paper sessions (15 min)
+
+**Target Total Exercise Minutes:** `r total_time` minutes
+
+**Number of Personal Trainer Sessions:** `r pt_sessions` sessions
+
+**Number of Unsupervised Sessions:** `r 5-pt_sessions` sessions
+
+\hfill 
+
+**This Week's Core & Fusion Video Workout:** `r paste(weekly_cf_vid$exercise_mode_video, weekly_cf_vid$video)`
+
+**Equipment Needed:** `r weekly_cf_vid$additional_equipment`
+
+**Link to Video:** [`r weekly_cf_vid$link`](`r weekly_cf_vid$link`)
+
+
+
+## Prescribed Weight Training Exercises
+
+**Do these exercises at `r intensity`% of your maximum amount established with your trainer for `r sets` sets of `r reps` repetitions.**
+
+```{r weighted_exercises, echo = FALSE,  fig.show = "hold", out.width = "50%", fig.align = "default"}
+
+#Reordered exercises on 1.24.22
+
+if(is.na(current_exercise_prescription$leg_press) == F){
+  knitr::include_graphics(file.path(data_dir,'participant_email','resized_3x6','legpress_3x6.jpg'))
+}
+
+if(is.na(current_exercise_prescription$low_row) == F){
+  knitr::include_graphics(file.path(data_dir,'participant_email','resized_3x6','lorow_3x6.jpg'))
+}
+
+
+if(is.na(current_exercise_prescription$chest) == F){
+  knitr::include_graphics(file.path(data_dir,'participant_email','resized_3x6','chest_3x6.jpg'))
+}
+
+if(is.na(current_exercise_prescription$reverse_fly) == F){
+  knitr::include_graphics(file.path(data_dir,'participant_email','resized_3x6','revfly_3x6.jpg'))
+}
+
+if(is.na(current_exercise_prescription$hamstrings) == F){
+  knitr::include_graphics(file.path(data_dir,'participant_email','resized_3x6','hammy_3x6.jpg'))
+}
+
+if(is.na(current_exercise_prescription$bicep) == F){
+  knitr::include_graphics(file.path(data_dir,'participant_email','resized_3x6','bicep_3x6.jpg'))
+}
+
+if(is.na(current_exercise_prescription$tricep) == F){
+  knitr::include_graphics(file.path(data_dir,'participant_email','resized_3x6','tricep_3x6.jpg'))
+}
+
+
+```
+
+**Do these exercises for `r bodyweight_sets` sets of `r bodyweight_reps` repetitions. After week 12, you may modify difficulty in accordance with your trainer.**
+
+```{r bodyweight_exercises, echo = FALSE,  fig.show = "hold", out.width = "50%", fig.align = "default"}
+
+
+  if(is.na(current_exercise_prescription$calves) == F){
+    knitr::include_graphics(file.path(data_dir,'participant_email','resized_3x6','calf_3x6.jpg'))
+  }
+
+  if(is.na(current_exercise_prescription$squat) == F){
+    knitr::include_graphics(file.path(data_dir,'participant_email','resized_3x6','squat_3x6.jpg'))
+  }
+  
+  if(is.na(current_exercise_prescription$bridges) == F){
+    knitr::include_graphics(file.path(data_dir,'participant_email','resized_3x6','bridge_3x6.jpg'))
+  }
+
+  if(is.na(current_exercise_prescription$stomach_curls) == F){
+    knitr::include_graphics(file.path(data_dir,'participant_email','resized_3x6','curl_3x6.jpg'))
+  }
+  
+
+
+```
+
+
+
+#### Reminders
+
+* Remember to bring your exercise log and record your exercise immediately
+
+* Remember to start and stop your Fitbit watch at the beginning and end of exercise sessions
+  + Start your watch before warm-up and after cool-down to ensure you get 150 minutes of total activity
+
+* Weight training can be in the form of resistance bands, machine weights, free weights in very limited situations with appropriate direct or indirect supervision, or body weight. Weight training sessions are expected to last about 35 minutes
+
+* Rest no less than 1 minute and no more than 2 minutes between each exercise set. 
+
+* Be sure to focus on strict posture and a full, comfortable range of motion. 
+
+* From time to time, you may miss a supervised session due to illness, travel, or other commitments. For any missed sessions, it is important to follow some rules regarding rescheduling: 
+  + A maximum of supervised sessions per week consistent with the frequency of supervised sessions at that point in the study
+  + No more than 2 sets of repetitions for any exercise per day
+  + No more than 2 days of WT in a week
+  
+
+``` {r generate_html_ex_prescription, include=FALSE}
+
+weighted_exercises <- data.frame(exercise = c('<li>Leg Press</li>','<li>Low Row</li>','<li>Chest Press</li>','<li>Reverse Fly / High Row</li>','<li>Hamstring Curl</li>','<li>Bicep Curl</li>','<li>Tricep Push Down</li>'), include = c(current_exercise_prescription$leg_press, current_exercise_prescription$low_row, current_exercise_prescription$chest, current_exercise_prescription$reverse_fly, current_exercise_prescription$hamstrings, current_exercise_prescription$bicep, current_exercise_prescription$tricep)) %>%
+  filter(!is.na(include))
+
+bodyweight_exercises <- data.frame(exercise = c('<li>Calf Raises</li>','<li>Bodyweight Squat</li>','<li>Bridges</li>','<li>Curl-ups</li>'),
+                                   include = c(current_exercise_prescription$calve, current_exercise_prescription$squat, current_exercise_prescription$bridges, current_exercise_prescription$stomach_curls)) %>%
+  filter(!is.na(include))
+
+all_weighted <- case_when(nrow(weighted_exercises) > 0 ~ paste0(weighted_exercises$exercise, collapse = " "), 
+                          T ~ "You have no exercises prescribed. If this does not sound right, please contact the study coordinator.")
+
+all_bodyweight <- case_when(nrow(bodyweight_exercises) > 0 ~ paste0(bodyweight_exercises$exercise, collapse = " "), 
+                          T ~ "You have no exercises prescribed. If this does not sound right, please contact the study coordinator.")
+
+html_ex_prescription <- paste0('
+                  <tr>
+                     <td align="left">
+                      <p style="font-family:arial;" style= "font-size:125%;"><b>',current$scrn_fname,'&#8217;s Week ',current$presentweeknum,' Exercise Prescription</b></p>
+                    </td>
+                  </tr>
+                  <tr>
+                     <td align="left">
+                      <p style="font-family:arial;" style= "font-size:100%;">
+                      <br><b>Target Weight Training Sessions:</b> 2 approximately 35 minute sessions<br>
+                      <b>Target Core & Fusion Sessions::</b> 1 video session (~40 min) and 2 paper sessions (15 min)<br>
+                      <b>Target Total Weekly Exercise Minutes:</b> ',total_time,' minutes<br>
+                      <b>Number of Personal Trainer Sessions:</b> ',pt_sessions,' sessions<br>
+                      <b>Number of Unsupervised Sessions: </b> ',5-pt_sessions,' sessions<br><br>
+                      
+                      <b>This Week&#8217s Video Workout: </b> ',paste(weekly_cf_vid$exercise_mode_video, weekly_cf_vid$video),'<br>
+                      <b>Equipment Needed: </b> ',weekly_cf_vid$additional_equipment,'<br>
+                      <b>Link to Video: </b> ',weekly_cf_vid$link,'<br><br>
+                      
+                      <b>Prescribed Weight Training Exercises</b><br><br>
+                      Do these exercises at ',intensity,'% of your maximum amount established with your trainer for ',sets,' sets of ',reps,' repetitions.<br>
+                      <ol>',
+                        all_weighted,'
+                      </ol><br>
+                      
+                      Do these exercises for ',bodyweight_sets,' sets of ', bodyweight_reps,' repetitions. After week 12, you may modify difficulty in accordance with your trainer.<br>
+                      <ol>',
+                        all_bodyweight,'
+                      </ol><br>
+                      
+                      <b>Reminders </b><br><br>
+                        <ul>
+                          <li>Remember to bring your exercise log and record your exercise immediately</li>
+                          <li>Remember to start and stop your Fitbit watch at the beginning and end of exercise sessions. Start your watch before warm-up and after cool-down to ensure you 150 minutes of total activity.</li>
+                          <li>Weight training can be in the form of resistance bands, machine weights, free weights in very limited situations with appropriate direct or indirect supervision, or body weight. Weight training sessions are expected to last about 35 minutes. </li>
+                          <li>Rest no less than 1 minute and no more than 2 minutes between each exercise set.</li>
+                          <li>Be sure to focus on strict posture and a full, comfortable range of motion. </li>
+                          <li> From time to time, you may miss a supervised session due to illness, travel, or other commitments. For any missed sessions, it is important to follow some rules regarding rescheduling:</li>
+                            <ul>
+                              <li>A maximum of supervised sessions per week consistent with the frequency of supervised sessions at that point in the study</li>
+                              <li>No more than 2 sets of repetitions for any exercise per day</li>
+                              <li>No more than 2 days of WT in a week</li>
+                            </ul>
+                          </ul>
+                      </p>
+                    </td>
+                  </tr>'
+)
+
+id_to_check <- current$comet_study_id
+
+to_save <- c('html_ex_prescription','id_to_check')                 
+save(list = to_save, file = file.path(data_dir,'participant_email','current_html_prescription.Rdata'))
+
+
+```
+
+
+
+
+
+
+
+
+
+

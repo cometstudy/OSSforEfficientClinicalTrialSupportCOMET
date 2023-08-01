@@ -1,0 +1,1229 @@
+---
+output: 
+  html_document:
+    toc: TRUE
+---
+
+```{r setup, include=FALSE}
+#' @section Development notes:
+#' 2022.11.9 Haven't been taking notes until now. I just added the adherence and bland altman plots. JC
+
+##### Declare Libraries #####
+library(rio)
+library(httr)
+library(lubridate)
+library(tidyverse)
+library(htmlTable)
+library(R.utils)
+library(gtools)
+library(gtsummary)
+library(gt)
+library(flextable)
+  
+###### Build Root Server #####  
+if(Sys.info()["nodename"]=="workstation_1" & Sys.info()["user"]=="study_coordinator_2") {
+  root_p <- file.path("drive")
+  root_server_dir <- file.path(root_p,"study_dir_a")
+  python_cmd_prefix <- "py "
+} else if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+  root_p <- ""
+  # root_server_dir <- file.path(root_p,"ADC_Data")
+  root_server_dir <- file.path(root_p,"COMET")
+  python_cmd_prefix <- "python "
+}
+  
+###### Load Directories #####
+load(file.path(root_server_dir,'study_dir_a','COMET','data','clean','directories.Rdata'))
+
+###### Load Data #####
+load(file.path(data_dir,'clean','comet_clean.Rdata'))
+load(file.path(clean_data_destination,'adherence.Rdata'))
+
+message("Loaded libraries and .rdata")
+
+  ##### COMET database (test entry removed) ######
+  comet_scientist_markdown <- comet %>%
+    filter(record_id != 0) %>%
+    filter(redcap_event_name == "baseline_arm_1") %>%
+    mutate(Status = case_when(intervention_status == 1 ~ "Actively on intervention",
+                              intervention_status == 2 ~ "Successfully completed",
+                              intervention_status == 3 ~ "Withdrawn willing to complete testing",
+                              intervention_status == 4 ~ "Withdrawn unwilling to complete testing",
+                              intervention_status == 5 ~ "Lost to Follow-up",
+                              intervention_status == 6 ~ "Terminated Early")) %>%
+    mutate(race_ethnicity = case_when(ethnicity == "Hispanic or Latino" & (race == "White" | race == "None of these fully describe me") ~ "Hispanic or Latino", 
+                                      T ~ race ))
+  
+  ##### import recruitment projections ####
+recruitment_projection <- import(file.path(data_dir,'scientist_email','recruitment_projection.xlsx')) %>%
+  mutate(week = week(ymd(Date)), year = year(ymd(Date)))
+
+##### Percent Success Dataframe #### 
+percent_success <- comet_scientist_markdown %>%
+  filter(scrn_date > today() - 180) %>%
+  mutate(scrn_elig = case_when(is.na(scrn_elig) ~ 0,
+                               TRUE ~ as.numeric(scrn_elig))) %>%
+  group_by(scrn_elig) %>%
+  count() 
+
+percent_success2 <- percent_success %>%
+  mutate(percent = scales::percent(n/sum(percent_success$n)))
+
+##### Source consort diagram to use throughout document ####
+source(file.path(data_dir,'dsmc_report','dsmc_consort_generator_open.R'))
+source(file.path(script_dir,'06_exercise_data_consolidation.R'))
+source(file.path(script_dir,'06_exercise_adherence.R'))
+
+
+
+```
+
+```{r logo, echo = FALSE,  fig.show = "hold", out.width = "25%", fig.align = "center"}
+    knitr::include_graphics(file.path(data_dir,'participant_email','COMETLogo.jpg'))
+  
+```
+
+
+**Hi Scientists, Recruitment Coordinators, and Study Coordinators!**<br>
+
+Welcome to the the weekly COMET report. To see the correctly formatted report, open the attached "COMET Scientist Email.html" file. 
+
+The open dsmc report is generated weekly and attached. To view it, open the "dsmc_report_open.docx" file.  
+
+Building this report will be an ongoing project. If you would like to see additional information added, please reply to this email with suggestions. 
+
+### Recruitment OKRs
+
+As outlined in Ch. 2.3 of the MOP, the table below shows weekly recruitment objectives for the last few weeks. 
+<center>
+```{r recruitment, echo=FALSE}
+
+this_week <- week(today())
+this_year <- year(today())
+
+six_week <- week(today()-42)
+six_week_year <- year(today()-42)
+
+phone_screens <- comet_scientist_markdown %>%
+  mutate(week = isoweek(scrn_date), year = year(scrn_date)) %>%
+  group_by(week, year) %>%
+  count() 
+
+enrolled <- comet_scientist_markdown %>%
+  mutate(week = isoweek(randomization_date), year = year(randomization_date)) %>%
+  group_by(week, year) %>%
+  count() 
+  
+enrollment_summary <- enrolled %>%
+  full_join(., phone_screens, by = c("week", "year")) %>%
+  ungroup() %>%
+  mutate(date = as.Date(paste0(year,week,"1"), '%Y%W%u')) %>%
+  filter(!is.na(week)) %>%
+  rename(`Phone Screens` = n.y, `Enrollments` = n.x) %>%
+  left_join(. , recruitment_projection, by = c("week", "year")) %>%
+  rename(`Enrollment Goal` = `Enrollment Goal by Week`, `Phone Screen Goal` = `Phone Screen Goal by Week`) %>%
+  filter(Date >= today()-49) %>%
+  select(Date, `Phone Screen Goal`, `Phone Screens`, `Enrollment Goal`, `Enrollments`) %>%
+  replace(is.na(.), 0) %>%
+  arrange(desc(.), by = Date)
+  
+  enrollment_summary %>%
+  addHtmlTableStyle(align = "c",
+                  col.rgroup = c("none", "#F7F7F7"),
+                  css.cell = "height: 10px; padding: 4px",
+                  css.header = "padding: 20px"
+                  ) %>%
+  htmlTable(.,
+          rnames = F,
+           )
+
+```
+</center><br>
+
+### Recruitment Graph
+
+Are we on pace to fully enroll the study? As a reminder, enrollments usually lag behind phone screens by at least 6 weeks.
+<center>
+```{r recruitment_graph_dsmc, echo=FALSE, warning=FALSE, message=FALSE, out.width = "75%"}
+
+### load graphs
+knitr::include_graphics(file.path(data_dir,'dsmc_report','screen_projection.png')) 
+knitr::include_graphics(file.path(data_dir,'dsmc_report','enrollment_projection.png')) 
+
+
+
+```
+
+
+</center><br>  
+
+
+### Person-time Projections
+
+The COMET Coordination - Study Team Time graph estimates the time required for the COMET study team to coordinate the trial. As of 9.1.22, COMET has ~ 80 coordinator / RA hours and ~ 5 student hours.
+
+- Screening Time includes initial contact calls, phone screens, medical clearances, and baseline visit scheduling
+- Visit Time includes consents, GXTs, and MRIs and visit prep for currently enrolled and projected participarticipants. 
+- Office Time includes phone calls, data entry, adverse events, team meetings, study development, and participant contact
+
+
+<center>
+```{r person_time, echo=FALSE, warning=FALSE, message=FALSE}
+
+####Job Responsibilities ####
+#Visit based - both projection and enrolled
+#All accounted for 8.22.22
+consent <- 2 #projected#enrolled#Baseline visit takes 1.5 hours with .5 hours of data entry
+cognitive_test <- .5 #projected#enrolled#week 26 and 52 cog tests take about half an hour
+gxt <- 4 #projected#enrolled#gxt's take about 4 hours
+mri <- 2 #projected#enrolled#About 2 hours per MRI session
+
+visit_prep <- .25 #projected#enrolled#Takes about 15 minutes per visit
+covid_19_call <- .25 #projected#enrolled#Each visit warning covid-19 call takes 30 min
+
+#Projection
+phone_screen <- 2 #Between initial contact and phone screen, total process is about 2 hours
+med_clearance <- 2.25 #About 2.25 hours per person that goes through baseline
+
+####Calls####
+#Finished enrolled calls
+check_in_call <- .5 #.25 hours per check in call
+visit_scheduling <- 1 #Takes an hour to schedule baseline and week 52 visits #Projection based and in week 39
+visit_scheduling_26 <- .5 #Takes about half an hour to schedule week 26 visit occurs in week 13
+
+####based on number enrolled####
+adverse_events <- .06 #Time spent on AEs per week per participant enrollment. This was calculated on 8.19.22 because SW spends about 3 hours per week with 58 enrolled participants. 
+data_entry <- .05 #For data entry, clincard, and other tracking activities per week. Same math as adverse events
+
+
+####Weekly ####
+meetings <- 7.5 #2.5 hours monday PI team meetings, 3 hours (6 team members) for .5 coordinator meeting, 2 hours YMCA Liason Meeting  
+random_crisis <- 5 #5 hours dedicated to random crises, conversations with participants, and study development
+
+#### Covid Calls with enrolled or scheduled participants ####
+# I included these in visit projections
+# covid_calls <- comet_scientist_markdown %>%
+#   select(record_id, contains("cogsched"), redcap_event_name)  %>%
+#   pivot_longer(., cols = c(contains("cogsched"))) %>%
+#   filter(!is.na(value)) %>%
+#   mutate(value = as_date(value)) %>%
+#   mutate(covid_call_hours = covid_19_call)
+
+
+#### Calls - Enrolled ####
+#Includes check in calls, 
+calls <- comet_scientist_markdown %>%
+  filter(!is.na(group), intervention_status == 1| !is.na(intervention_status)) %>%
+  select(comet_study_id, comet_interventionstart) %>% 
+  mutate(week_3_check = comet_interventionstart + weeks(2)) %>%
+  mutate(week_6_check = comet_interventionstart + weeks(5)) %>%
+  mutate(week_13_check = comet_interventionstart + weeks(12)) %>%
+  mutate(week_19_check = comet_interventionstart + weeks(18)) %>%
+  mutate(week_32_check = comet_interventionstart + weeks(31)) %>%
+  mutate(week_39_check = comet_interventionstart + weeks(38)) %>%
+  mutate(week_45_check = comet_interventionstart + weeks(44)) %>%
+  pivot_longer(cols = contains("check")) %>%
+  mutate(check_in_hours = check_in_call) %>%
+  mutate(wk52_sched_hours = case_when(name == "week_39_check" ~ visit_scheduling,
+                                      T ~ 0)) %>%
+  mutate(wk26_sched_hours = case_when(name == "week_13_check" ~ visit_scheduling_26,
+                                      T ~ 0)) %>%
+  mutate(hours = check_in_hours + wk26_sched_hours + wk52_sched_hours) %>%
+  mutate(week = week(value), year = year(value)) %>%
+  arrange(year, week) %>%
+  group_by(week, year) %>%
+  summarize(call_hours = sum(as.numeric(hours))) %>%
+  arrange(year, week) %>%
+  ungroup() %>%
+  mutate(rolling_call_avg_hours = zoo::rollapply(call_hours, 3,mean,align='left',fill=NA)) %>%
+  select(-call_hours)
+
+  
+
+
+##### Baseline Scheduled Hours for next 4 weeks ####
+baseline_sched <- comet_scientist_markdown %>%
+  select(contains("comet_baseline")) %>%
+  pivot_longer(cols = everything()) %>%
+  filter(!is.na(value))  %>%
+  mutate(hours = case_when(name == "comet_baselinecogsched" ~ consent + covid_19_call + visit_prep,
+                           name == "comet_baselinegxtsched" ~ gxt + visit_prep,
+                           name == "comet_baselinemrisched" ~ mri + visit_prep)) %>%
+  mutate(week = week(value), year = year(value)) %>%
+  select(hours, week, year) %>%
+  arrange(year, week) %>%
+  group_by(week, year) %>%
+  summarize(baseline_hours = sum(hours))  %>%
+  mutate(date = as.Date(paste0(year,str_pad(week, width = 2, side = "left", pad = 0),"1"), "%Y%W%u")) %>%
+  filter(date > today()-1 & date <= today()+28) %>%
+  select(-date)
+
+#### Follow up visit hours for all enrolled ####
+enrolled_expected_hours <- comet_scientist_markdown %>%
+  filter(intervention_status != 4 & intervention_status != 5) %>%
+  select(comet_week26date,comet_week52date) %>%
+  pivot_longer(cols = everything()) %>%
+  filter(!is.na(value)) %>%
+  mutate(visit_hours = case_when(name == "comet_week26date" ~ cognitive_test + covid_19_call + visit_prep,
+                           name == "comet_week52date" ~ cognitive_test + gxt + mri + visit_prep*3 + covid_19_call)) %>%
+  mutate(week = week(value), year = year(value)) %>%
+  select(visit_hours, week, year) %>%
+  arrange(year, week) %>%
+  group_by(week, year)  %>%
+  summarize(enrolled_expected_hours = sum(visit_hours)) %>%
+  ungroup() %>%
+  mutate(date = as.Date(paste0(year,str_pad(week, width = 2, side = "left", pad = 0),"1"), "%Y%W%u")) %>%
+  arrange(date) %>%
+  mutate(rolling_avg = zoo::rollapply(enrolled_expected_hours, 3,mean,align='left',fill=NA)) %>%
+  select(-enrolled_expected_hours, -date) %>%
+  rename(enrolled_expected_hours = rolling_avg)
+
+##### Projection hours ####
+#consent starts in week after baseline_sched ends, followed each week by gxt and mri as this is the typical way we schedule
+#week_26 and week_55 are later to account for 20 day window between randomization and intervention start
+#this was the best I could do to model visits
+projected_enrollments <- recruitment_projection %>%
+  filter(Date > today()+28) %>%
+  #mutate(projected_hours = .$`Enrollment Goal by Week`*8) %>%
+  rename( enrollments_per_week = `Enrollment Goal by Week`) %>%
+  select(Date, enrollments_per_week, week, year) %>%
+  mutate(consent = Date, gxt = Date, mri = Date, week_26 = Date + weeks(29), week_52 = Date + weeks(55)) %>%
+  pivot_longer(cols = c("consent", "gxt", "mri","week_26","week_52")) %>%
+  mutate(baseline_hours = case_when(name == "consent" ~ (consent + covid_19_call + visit_prep)*enrollments_per_week*1.13, #1.13 factor added bc as of 8/31/22 9 out of 70 baseline participants had screen failed. Will have to run more baseline visits than 2.2 to hit enrollment goal
+                                    name == "gxt" ~ (gxt + visit_prep)*enrollments_per_week*1.13,
+                                    name == "mri" ~ (mri + visit_prep)*enrollments_per_week*1.13,
+                                    T ~ 0)) %>%
+  mutate(schedule_hours = case_when(name == "consent" ~ visit_scheduling * enrollments_per_week*1.13,
+                                    T ~ 0)) %>%
+  mutate(followup_hours = case_when(name == "week_26" ~ (cognitive_test + covid_19_call + visit_prep)*enrollments_per_week,
+                           name == "week_52" ~ (cognitive_test + gxt + mri + visit_prep*3 + covid_19_call)*enrollments_per_week,
+                           T ~ 0)) %>%
+  mutate(week = week(value), year = year(value)) %>%
+  arrange(year, week) %>%
+  group_by(year, week) %>%
+  summarize(sum_base_hours = sum(as.numeric(baseline_hours)), sum_follow_hours = sum(as.numeric(followup_hours)), sum_sched_hours = sum(schedule_hours)) %>%
+  arrange(year, week) 
+
+#### Screening hours ####
+screening <- recruitment_projection %>%
+  rename(phone_screens = `Phone Screen Goal by Week`) %>%
+  select(week, year, phone_screens) %>%
+  mutate(screen_hours = phone_screens*phone_screen, med_clear_hours = phone_screens*.45*med_clearance) %>%#.45 is approximate eligibility
+  select(-phone_screens)
+
+#### Based on number enrolled ####
+finishing_estimates <- recruitment_projection %>%
+  rename( finishes_per_week = `Enrollment Goal by Week`) %>%
+  mutate(end_week = week(Date + years(1)), end_year = year(Date + years(1))) %>%
+  select(end_week, end_year, finishes_per_week) %>%
+  mutate(running_finished = cumsum(finishes_per_week)) 
+
+enrollment_estimates <- recruitment_projection %>%
+  rename( enrollments_per_week = `Enrollment Goal by Week`) %>%
+  select(Date, week, year, enrollments_per_week)  %>%
+  mutate(running_enrolled = cumsum(enrollments_per_week)) %>%
+  filter(week != 53) %>%
+  left_join(., finishing_estimates, by = c("week" = "end_week", "year"="end_year")) %>%
+  mutate(currently_enrolled = running_enrolled - running_finished) %>%
+  mutate(rolling_avg_enrolled = zoo::rollapply(currently_enrolled, 3,mean,align='left',fill=NA)) %>%
+  mutate(adverse_events_hours = adverse_events * rolling_avg_enrolled, data_entry_hours = data_entry * rolling_avg_enrolled) %>%
+  select(week, year, rolling_avg_enrolled, data_entry_hours, adverse_events_hours)
+
+
+
+### Joined dataframe ####
+person_time <- left_join(enrollment_estimates, calls, by = c("week","year")) %>%
+  left_join(., baseline_sched, by = c("week","year")) %>%
+  left_join(., enrolled_expected_hours, by = c("week","year")) %>%
+  left_join(., projected_enrollments, by = c("week","year")) %>%
+  left_join(., screening, by = c("week","year")) %>%
+  mutate(meeting_hours = meetings, crisis_hours = random_crisis) 
+
+person_time[is.na(person_time)] <- 0
+
+# person_time$name <- factor(person_time$name,
+#                            c("screen_hours","med_clear_hours","baseline_hours","enrolled_expected_hours","sum_base_hours","sum_follow_hours", "rolling_call_avg_hours", "data_entry_hours", "adverse_events_hours"))
+
+
+
+person_time_2 <- person_time %>%
+  mutate("Screening Time" = screen_hours + med_clear_hours +sum_sched_hours) %>%
+  mutate("Visit Time" = baseline_hours + enrolled_expected_hours + sum_base_hours + sum_follow_hours) %>%
+  mutate("Office Time" = rolling_call_avg_hours + data_entry_hours + adverse_events_hours + meeting_hours, + crisis_hours) %>%
+  select(week, year, "Screening Time", "Visit Time", "Office Time") %>%
+  mutate(date = as.Date(paste0(year,str_pad(week, width = 2, side = "left", pad = 0),"1"), "%Y%W%u")) %>%
+  filter(date <= today()+months(11), date >= today()) %>%
+  select(-week, -year) %>%
+  pivot_longer(cols = -date) %>%
+  mutate(value = case_when(is.na(value) ~ 0,
+                           TRUE ~ value)) %>%
+  group_by(name)
+
+person_time_2$name <- factor(person_time_2$name,
+                           c("Screening Time", "Visit Time", "Office Time"))
+
+
+terrain10 <- c("#00A600", "#2DB600", "#63C600", "#A0D600", "#E6E600", "#E8C32E", "#EBB25E", "#EDB48E", "#F0C9C0", "#F2F2F2")
+
+
+
+ggplot(person_time_2, aes(x=date, y=value, fill = factor(name))) +
+  geom_area(color = 1,    # Line color
+            lwd = 0.5,    # Line width
+            linetype = 1) +
+  scale_fill_manual(values = c("#000000", "#BDBDBD", "gray95")) +
+  scale_y_continuous(limits = c(0, 160), breaks=seq(0,160,10), expand = c(0, 0)) +
+  scale_x_date(breaks = "months", labels = scales::date_format("%b %Y")) +
+    geom_abline(slope = 0, intercept = 80, linetype = 3) +
+
+  theme_bw() +
+  ggtitle("COMET Coordination - Study Team Time") +
+  ylab("Hours") +
+  xlab("Date") +
+  labs(fill = 'Activity') +
+    theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.78, .8),
+        legend.title = element_blank())
+
+```
+</center><br>
+
+The COMET YMCA Liason Time graph estimates the time COMET requires from the YMCA Liason. As of 9.1.22, COMET has ~ 30 ymca liason hours.
+
+- Gym Time includes orientations and fidelity checks for currently enrolled participants
+- Projected Gym Time includes orientations and fidelity checks for projected participants 
+- Office Time includes phone calls, scheduling, trainer orientations, COI collection, memberships, weekly reporting, and meetings
+
+<center>
+
+```{r ymca_time, echo=FALSE, warning=FALSE, message=FALSE}
+
+#Gym time 
+fidelity_check_time <- 2.5 #Standard quarterly fidelity check
+orientation <- 3.5 #Orientation session with trainer and participant takes an hour more than a standard fidelity check
+
+#Office time per randomization
+randomization_call <- .5 #Julie calls and randomizes participants
+scheduling_orientation <- .75 #Takes about 45 minutes to coordinate an orientation for COMET and create all necessary materials
+
+#Office time standard
+zoom_orientation <- .5 #Training for new trainer. Happens every three weeks
+coi_collection <- 4 #3 hours every week in July when Julie has to collect yearly COIs
+meetings <- 2.5 #Julie's meeting time weekly
+memberships <- 1 #1 hour, 1x per month towards the end
+baseline_report <- .5 #30 minutes weekly to send out baseline report
+trainer_support <- 5 #about 5 hours every week talking trainers and answering questions
+expense_reports <- .5 #30 minutes every week to create expense report
+
+#### Office Time ####
+office_time <- recruitment_projection %>%
+  rename(date = Date) %>%
+  select(date, week, year) %>%
+  mutate(zoom_orientation = case_when(week%%3 == 0 ~ zoom_orientation,
+                                      T ~ 0)) %>%
+  mutate(coi_collection = case_when(week >= 27 & week <= 31 ~coi_collection,
+                                          T ~ 0)) %>%
+  mutate(meeting = meetings) %>%
+  mutate(memberships = case_when(week%%4 == 0 ~ memberships,
+                                       T ~ 0)) %>%
+  mutate(weekly = baseline_report + trainer_support + expense_reports) %>%
+  mutate(office_hours = weekly + memberships + meeting + coi_collection + zoom_orientation)
+
+
+#### Dataframe with known gym time ####
+expected_checks <- comet %>%
+  filter(!is.na(comet_interventionstart)) %>%
+  filter(redcap_event_name == "baseline_arm_1") %>%
+  mutate(end_date = case_when(intervention_status == 2 ~ int_date_complete,
+                              intervention_status == 3 | intervention_status == 4 ~ int_withdrew_date,
+                              intervention_status == 5 ~ int_losttofollowup_date)) %>%
+  mutate(check_1 = comet_interventionstart) %>%
+  mutate(check_2 = case_when(is.na(end_date) | end_date > comet_interventionstart + 7 * 13 ~ comet_interventionstart + 7 * 12)) %>%
+  mutate(check_3 = case_when(is.na(end_date) | end_date > comet_interventionstart + 7 * 26 ~ comet_interventionstart + 7 * 25)) %>%
+  mutate(check_4 = case_when(is.na(end_date) | end_date > comet_interventionstart + 7 * 39 ~ comet_interventionstart + 7 * 38)) %>%
+  mutate(check_5 = case_when(is.na(end_date) | end_date > comet_week52date ~ comet_week52date)) %>%
+  select(record_id, check_1, check_2, check_3, check_4, check_5) %>%
+  pivot_longer(., cols = c("check_1","check_2","check_3","check_4","check_5")) %>%
+  filter(value > today()) %>%
+  mutate(name = case_when(name == "check_1" ~ 1,
+                          name == "check_2" ~ 2,
+                          name == "check_3" ~ 3,
+                          name == "check_4" ~ 4,
+                          name == "check_5" ~ 5)) %>%
+  mutate(week = week(value), year = year(value)) %>%
+  mutate(hours = case_when(name == 1 ~ orientation,
+                           T ~ fidelity_check_time)) %>%
+  select(hours, week, year) %>%
+  arrange(year, week) %>%
+  group_by(week, year) %>%
+  summarize(ymca_hours = sum(hours)) %>%
+  mutate(date = as.Date(paste0(year,str_pad(week, width = 2, side = "left", pad = 0),"1"), "%Y%W%u")) %>%
+  arrange(date) 
+expected_checks$ymca_hours <- zoo::rollmean(expected_checks$ymca_hours, 3, align = "left", fill = NA)
+ 
+  
+#### Dataframe with projected gym time ####
+projected_hours <- recruitment_projection %>%
+  rename(date = Date) %>%
+  filter(date > today()+days(21)) %>%
+  mutate(date2 = date + days(21), date3 = date + weeks(25), date4 = date + weeks(33), date5 = date + weeks(46)) %>%
+  select(contains("date"), `Enrollment Goal by Week`) %>%
+  pivot_longer(cols = contains("date")) %>%
+  mutate(hours = case_when(name == "date" ~ `Enrollment Goal by Week`*orientation,
+                           T ~ `Enrollment Goal by Week`*fidelity_check_time)) %>%
+  mutate(week = week(value), year = year(value)) %>%
+  arrange(year, week) %>%
+  group_by(week, year) %>%
+  summarize(projected_hours = sum(hours)) %>%
+  mutate(date = as.Date(paste0(year,str_pad(week, width = 2, side = "left", pad = 0),"1"), "%Y%W%u"))
+
+####Dataframe with projected office time per randomization ####
+projected_office_time_per_rand <- recruitment_projection %>%
+  rename(date = Date) %>%
+  select(contains("date"), `Enrollment Goal by Week`) %>%
+  pivot_longer(cols = contains("date")) %>%
+  mutate(hours = `Enrollment Goal by Week`*(randomization_call + scheduling_orientation)) %>%
+  mutate(week = week(value), year = year(value)) %>%
+  arrange(year, week) %>%
+  group_by(week, year) %>%
+  summarize(projected_office_time_per_rand_hours = sum(hours)) %>%
+  mutate(date = as.Date(paste0(year,str_pad(week, width = 2, side = "left", pad = 0),"1"), "%Y%W%u"))
+
+
+#### Joined dataframe ####
+ymca_person_time <- full_join(expected_checks, projected_hours, by = c("week","year", "date")) %>% 
+  left_join(., projected_office_time_per_rand, by = c("week","year", "date")) %>%
+  left_join(., office_time, by = c("week","year", "date"))  %>%
+  mutate(office_hour = projected_office_time_per_rand_hours + office_hours) %>%
+  filter(date <= today()+years(1)) %>%
+  ungroup() %>%
+  select(date, projected_hours, office_hour, ymca_hours) %>%
+  rename("Gym Time" = ymca_hours, "Projected Gym Time" = projected_hours, "Office Time" = office_hour) %>%
+  pivot_longer(cols = -date) %>% 
+  mutate(value = case_when(is.na(value) ~ 0,
+                           TRUE ~ value)) %>%
+  group_by(name) 
+ymca_person_time$name <- factor(ymca_person_time$name, c("Gym Time","Projected Gym Time","Office Time"))
+
+
+
+
+ggplot(ymca_person_time, aes(x=date, y=value, fill = factor(name))) + 
+  geom_area(color = 1,    # Line color
+            lwd = 0.5,    # Line width
+            linetype = 1) + 
+  scale_fill_manual(values = c("#000000", "#BDBDBD", "gray95")) + 
+  scale_y_continuous(limits = c(0, 80), breaks=seq(0,80,10), expand = c(0, 0)) +
+  scale_x_datetime(breaks = "months", labels = scales::date_format("%b %Y")) + 
+  geom_abline(slope = 0, intercept = 40, linetype = 3) +
+  theme_bw() + 
+  ggtitle("COMET YMCA Liason Time") +
+  ylab("Hours") +
+  xlab("Date") +
+  labs(fill = 'Activity') +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.line = element_line(color='black'),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.7, .8),
+        legend.title = element_blank()) 
+
+
+    
+```
+</center><br>
+
+### Intervention Adherence
+
+<center>
+```{r compare, echo=FALSE, warning=FALSE, message=FALSE, fig.width=12}
+
+
+combined <- time_based_adherence %>%
+  left_join(., performance_based_adherence, by = c("week","random_id")) %>%
+  filter(!is.na(adherence_score_performance)) %>%
+  select(-adherence_score_high) %>%
+  pivot_longer(contains("adherence"))
+
+
+# perf <- performance_based_adherence %>%
+#   mutate(week = factor(week)) %>%
+#   select(random_id, week, everything())
+# 
+# perf_long <- perf %>%
+#   pivot_longer(., -c(week, random_id)) %>%
+#   select(random_id, week, everything())
+# 
+# time <- time_based_adherence %>%
+#   mutate(week = factor(week)) %>%
+#   select(random_id, week, everything())
+# 
+# time_long <- time %>%
+#   pivot_longer(., -c(week, random_id)) %>%
+#   select(random_id, week, everything())
+# 
+# combined <- rbind(perf_long, time_long)
+
+
+
+
+ggplot(combined, aes(x = factor(week), y = value)) +
+  geom_violin() +
+  stat_summary(fun = mean, geom = "point", size=2, aes(shape = name, color = name), 
+               position = position_dodge(width = .75)) + 
+  theme_bw() +
+  labs(title = "All Three Approaches by Week") +
+  ylab("Adherence") +
+  theme(legend.position = "top") +
+  scale_y_continuous(breaks = seq(1:5)) +
+  geom_abline(slope = 0, intercept = 1, linetype = 3) 
+
+
+
+ggplot(combined, aes(x = factor(random_id), y = value)) +
+  geom_violin() +
+  stat_summary(fun = mean, geom = "point", size=2, aes(shape = name, color = name),
+               position = position_dodge(width = .75)) +
+  theme_bw() +
+  labs(title = "All Three Approaches by Participant") +
+  ylab("Adherence") +
+  xlab("Random ID") +
+  theme(legend.position = "top",
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank()) +
+  scale_y_continuous(breaks = seq(1:5)) +
+  geom_abline(slope = 0, intercept = 1, linetype = 3) 
+
+
+
+
+ 
+  
+
+```
+
+```{r bland_alt, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+#12.21.22 Stopped including on 12.21.22 JC
+
+perf <- performance_based_adherence %>%
+  mutate(week = factor(week)) %>%
+  select(random_id, week, everything())
+
+perf_long <- perf %>%
+  pivot_longer(., -c(week, random_id)) %>%
+  select(random_id, week, everything())
+
+time <- time_based_adherence %>%
+  mutate(week = factor(week)) %>%
+  select(random_id, week, everything())
+
+time_long <- time %>%
+  pivot_longer(., -c(week, random_id)) %>%
+  select(random_id, week, everything())
+
+combined <- rbind(perf_long, time_long)
+
+
+compare <- combined %>%
+  filter(! name == "adherence_score_log")  %>%
+  mutate(value = round(value*100,1)) %>%
+  mutate(cut =  cut(value, breaks = seq(0,400,20), include.lowest = FALSE, 
+                    ordered_result = TRUE))
+
+ ba_data <- compare %>%
+  pivot_wider(., id_cols = c(random_id, week)) %>%
+  mutate(mean = rowMeans(across(starts_with("adherence")), na.rm = TRUE),
+         diff = adherence_score_performance - adherence_score_high)
+
+ggplot(ba_data, aes(x=mean, y = diff)) +
+  geom_point() +
+  geom_segment(aes(x=0,xend=max(mean), y=0, yend=0), color="blue") +
+  geom_segment(aes(x=0,xend=max(mean), y=sd(diff,na.rm=TRUE), yend=sd(diff,na.rm=TRUE)), color="blue") +
+  geom_segment(aes(x=0,xend=max(mean), y=-sd(diff,na.rm=TRUE), yend=-sd(diff,na.rm=TRUE)), color="blue")  + 
+  theme_bw() +
+  ylim(-250, 250) + 
+  xlim(0, 400) +
+  xlab('Mean of the Two Measure Types') +
+  ylab('Difference Between the Two Measure Types (Perf - High') +
+  labs(fill='', title = "Performance Score vs High Score -- Bland-Altman")
+
+compare2 <- combined %>%
+  filter(! name == "adherence_score_high")  %>%
+  mutate(value = round(value*100,1)) %>%
+  mutate(cut =  cut(value, breaks = seq(0,400,20), include.lowest = FALSE, 
+                    ordered_result = TRUE)) %>%
+  mutate(cut = factor(cut))
+
+ba_data2 <- compare2 %>%
+  pivot_wider(., id_cols = c(random_id, week)) %>%
+  mutate(mean = rowMeans(across(starts_with("adherence")), na.rm = TRUE),
+         diff = adherence_score_performance - adherence_score_log)
+
+ggplot(ba_data2, aes(x=mean, y = diff)) +
+  geom_point() +
+  geom_segment(aes(x=0,xend=max(mean), y=0, yend=0), color="blue") +
+  geom_segment(aes(x=0,xend=max(mean), y=sd(diff,na.rm=TRUE), yend=sd(diff,na.rm=TRUE)), color="blue") +
+  geom_segment(aes(x=0,xend=max(mean), y=-sd(diff,na.rm=TRUE), yend=-sd(diff,na.rm=TRUE)), color="blue")  + 
+  theme_bw() +
+  ylim(-250, 250) + 
+  xlim(0, 400) +
+  xlab('Mean of the Two Measure Types') +
+  ylab('Difference Between the Two Measure Types (Perf - Log') +
+  labs(fill='', title = "Performance Score vs Log Score -- Bland-Altman")
+
+
+compare3 <- combined %>%
+  filter(! name == "adherence_score_performance")  %>%
+  mutate(value = round(value*100,1)) %>%
+  mutate(cut =  cut(value, breaks = seq(0,400,20), include.lowest = FALSE, 
+                    ordered_result = TRUE)) %>%
+  mutate(cut = factor(cut))
+ba_data3 <- compare3 %>%
+  pivot_wider(., id_cols = c(random_id, week)) %>%
+  mutate(mean = rowMeans(across(starts_with("adherence")), na.rm = TRUE),
+         diff = adherence_score_high - adherence_score_log)
+
+ggplot(ba_data3, aes(x=mean, y = diff)) +
+  geom_point() +
+  geom_segment(aes(x=0,xend=max(mean), y=0, yend=0), color="blue") +
+  geom_segment(aes(x=0,xend=max(mean), y=sd(diff,na.rm=TRUE), yend=sd(diff,na.rm=TRUE)), color="blue") +
+  geom_segment(aes(x=0,xend=max(mean), y=-sd(diff,na.rm=TRUE), yend=-sd(diff,na.rm=TRUE)), color="blue")  + 
+  theme_bw() +
+  ylim(-250, 250) + 
+  xlim(0, 400) +
+  xlab('Mean of the Two Measure Types') +
+  ylab('Difference Between the Two Measure Types (High - Log') +
+  labs(fill='', title = "High Score vs Log Score -- Bland-Altman")
+ 
+  
+
+```
+</center><br>
+
+```{r show_code, echo=TRUE, fig.align='left', message=FALSE, include=FALSE}
+#12.22.22 Commented out. JC
+##### Begin creating dataframes for performance based adherence
+###### Strength #####
+strength <- exercise_log %>%
+  filter(record_id %in% ex_log_clean_temp$record_id) %>%
+  filter(log_group >= 4) %>%
+  select(record_id, comet_study_id, log_weeknum, log_legpress, log_lorow, log_chest, log_hirow,
+         log_hammy, log_bicep, log_tricep, log_squat, log_calf, log_bridge, log_curl) %>%
+  pivot_longer(cols = -c(record_id, comet_study_id, log_weeknum)) %>%
+  mutate(status = case_when(value == 1 ~ 0,
+                            value == 2 ~ .5,
+                            value == 3 ~ 1,
+                            value == 4 ~ 1)) %>%
+  pivot_wider(id_cols = c(record_id, comet_study_id, log_weeknum), names_from = name, values_from = status) %>%
+  mutate(summary = log_legpress + log_lorow+ log_chest+ log_hirow+
+              log_hammy+ log_bicep+ log_tricep+ log_squat+ log_calf+ log_bridge+ log_curl) %>%
+  mutate(adherence_weights = summary / 11) %>%
+  select(comet_study_id, log_weeknum, adherence_weights) %>%
+  mutate(activityParentName = "Weights")
+
+#### Endurance ####
+endurance <- activities_all_df %>%
+  left_join(., comet_to_join, by = c("comet_study_id")) %>%
+  mutate(week = floor(difftime(as.Date(startDate), comet_interventionstart, units = c("weeks")))+1) %>%
+  mutate(duration = round(duration / 60 / 1000, digits = 0)) %>%
+  filter(week >  0 & week != presentweeknum)  %>%
+  filter( activityParentName == "Workout") %>%
+  filter(group == 3 | group == 5) %>%
+  mutate(zone_minutes = time_in_zone + time_over_zone) %>%
+  group_by(week, comet_study_id, activityParentName) %>%
+  summarize(ex_min_fitbit = sum(zone_minutes)) %>%
+  mutate(week = as.numeric(week))
+
+#### Core & Fusion #####
+#Use fitbit and exercise log to calculate number of yoga sessions
+#Need to figure out what to consider a successful session
+yoga_fitbit <- activities_all_df %>%
+  left_join(., comet_to_join, by = c("comet_study_id")) %>%
+  mutate(week = floor(difftime(as.Date(startDate), comet_interventionstart, units = c("weeks")))+1) %>%
+  mutate(duration = round(duration / 60 / 1000, digits = 0)) %>%
+  filter(week >  0 & week != presentweeknum) %>%
+  filter( activityParentName == "Yoga") %>%
+  filter(group == 2 | group == 4) %>%
+  group_by(comet_study_id, startDate) %>%
+  summarize(comet_study_id = comet_study_id, week = week, activityParentName = activityParentName, duration = sum(duration)) %>%
+  distinct() %>%
+  filter(duration >= 10) %>%
+  group_by(week, comet_study_id, activityParentName) %>%
+  summarize(num_yoga_sessions_fitbit = n()) %>%
+  mutate(week = as.numeric(week))
+
+yoga_ex_log <- exercise_log %>%
+  filter(record_id %in% ex_log_clean_temp$record_id) %>%
+  filter(log_group == 4 | log_group == 2) %>%
+  mutate(num_yoga_sessions_log = case_when(log_group == 2 ~ log_supervised_num + log_independent_num,
+                                           log_group == 4 & log_rt_min > 30 ~ log_supervised_num + log_independent_num - as.integer(2),
+                                           log_group == 4 & log_rt_min > 0 ~ log_supervised_num + log_independent_num - as.integer(1),
+                                           log_group == 4 & log_rt_min == 0 ~ log_supervised_num + log_independent_num)) %>%
+  select(comet_study_id, log_weeknum, num_yoga_sessions_log, log_group) 
+
+yoga <- full_join(yoga_fitbit, yoga_ex_log, by = c("comet_study_id", "week" = "log_weeknum")) %>%
+  mutate(yoga_highest = case_when(num_yoga_sessions_fitbit >= num_yoga_sessions_log | is.na(num_yoga_sessions_log) ~ num_yoga_sessions_fitbit,
+                                  num_yoga_sessions_fitbit < num_yoga_sessions_log | is.na(num_yoga_sessions_fitbit) ~ num_yoga_sessions_log))  %>%
+  mutate(yoga_difference = case_when(num_yoga_sessions_fitbit >= num_yoga_sessions_log ~ num_yoga_sessions_fitbit - num_yoga_sessions_log,
+                                    num_yoga_sessions_fitbit < num_yoga_sessions_log ~ num_yoga_sessions_log - num_yoga_sessions_fitbit))  %>%
+  mutate(yoga_adherence = case_when(log_group == 2 ~ yoga_highest / 5,
+                                    log_group == 4 ~ yoga_highest / 3)) %>%
+  select(week, comet_study_id, activityParentName, yoga_adherence) 
+
+##### Performance based adherence dataframe #####
+performance_based_adherence_temp <- adherence_score_temp %>%
+  select(comet_study_id, week, activityParentName, final_week, group, prescribed_ex_min, adherence_score_pref_log) %>%
+  left_join(., strength, by = c("comet_study_id", "week"="log_weeknum", "activityParentName")) %>%
+  left_join(., endurance, by = c("comet_study_id","week", "activityParentName")) %>%
+  left_join(., yoga, by = c("comet_study_id", "week", "activityParentName")) %>%
+  mutate(adherence_endurance = ex_min_fitbit / prescribed_ex_min) %>%
+  mutate(adherence = case_when(group == 2 ~ yoga_adherence,
+                               group == 3 ~ adherence_endurance, 
+                               group == 4 & activityParentName == "Weights" ~ adherence_weights / 2,
+                               group == 4 & activityParentName == "Yoga" ~ yoga_adherence / 2,
+                               group == 5 & activityParentName == "Weights" ~ adherence_weights / 2,
+                               group == 5 & activityParentName == "Workout" ~ adherence_endurance / 2)) %>%
+  group_by(comet_study_id, week) %>%
+  summarize(adherence_score_performance = sum(adherence)) 
+
+performance_based_adherence <- performance_based_adherence_temp %>%
+  left_join(., random_ids, by = "comet_study_id") %>%
+  ungroup() %>%
+  select(-comet_study_id) %>%
+  arrange(random_id) %>%
+  filter(!is.na(adherence_score_performance))
+
+
+perf <- performance_based_adherence %>%
+  mutate(week = factor(week)) %>%
+  select(random_id, week, everything())
+
+perf_long <- perf %>%
+  pivot_longer(., -c(week, random_id)) %>%
+  select(random_id, week, everything())
+
+time <- time_based_adherence %>%
+  mutate(week = factor(week)) %>%
+  select(random_id, week, everything())
+
+time_long <- time %>%
+  pivot_longer(., -c(week, random_id)) %>%
+  select(random_id, week, everything())
+
+combined <- rbind(perf_long, time_long)
+
+
+ggplot(combined, aes(x = week, y = value)) +
+  geom_violin() +
+  stat_summary(fun = mean, geom = "point", size=2, aes(shape = name, color = name), 
+               position = position_dodge(width = .75)) + 
+  theme_bw() +
+  labs(title = "All Three Approaches by Week") +
+  ylab("Adherence") +
+  theme(legend.position = "top") +
+  scale_y_continuous(breaks = seq(1:5)) +
+  geom_abline(slope = 0, intercept = 1, linetype = 3) 
+
+
+perf_id <- performance_based_adherence %>%
+  mutate(week = factor(random_id)) %>%
+  select(random_id, week, everything())
+
+perf_long_id <- perf_id %>%
+  pivot_longer(., -c(week, random_id)) %>%
+  select(random_id, week, everything())
+
+time_id <- time_based_adherence %>%
+  mutate(week = factor(random_id)) %>%
+  select(random_id, week, everything())
+
+time_long_id <- time_id %>%
+  pivot_longer(., -c(week, random_id)) %>%
+  select(random_id, week, everything())
+
+combined_id <- rbind(perf_long_id, time_long_id)
+
+ggplot(combined_id, aes(x = factor(random_id), y = value)) +
+  geom_violin() +
+  stat_summary(fun = mean, geom = "point", size=2, aes(shape = name, color = name),
+               position = position_dodge(width = .75)) +
+  theme_bw() +
+  labs(title = "All Three Approaches by Participant") +
+  ylab("Adherence") +
+  xlab("Random ID") +
+  theme(legend.position = "top",
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank()) +
+  scale_y_continuous(breaks = seq(1:5)) +
+  geom_abline(slope = 0, intercept = 1, linetype = 3) 
+```
+
+
+
+
+### Ongoing Adverse Events and EOIs
+
+
+<center>
+```{r ae_ongoing, echo=FALSE, message=FALSE}
+
+
+###### import ctcae categories and terms #######
+ctcae_categories <- import(file.path(data_dir,'dsmc_report','CTCAE_v5.0_categories.xlsx'))
+ctcae_terms <- import(file.path(data_dir,'dsmc_report','CTCAE_v5.0_terms.xlsx'))
+
+
+ongoing_aes <- adverse_event %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(adverse_event_complete != 2)  %>%
+  left_join(., comet_scientist_markdown, by = "record_id") %>%
+  mutate(Outcome = case_when(ae_outcome == 1 ~ "Recovered, without treatment",
+                             ae_outcome == 2 ~ "Recovered, with treatment",
+                             ae_outcome == 3 ~ "Still Present, no treatment",
+                             ae_outcome == 4 ~ "Still Present, being treated",
+                             ae_outcome == 5 ~ "Residual effect(s) present - no treatment",
+                             ae_outcome == 6 ~ "Residual effect(s) present- being treated",
+                             ae_outcome == 7 ~ "Subject died")) %>%
+  mutate(Grade = case_when(ae_grade == 1 ~ "Grade 1; Mild",
+                           ae_grade == 2 ~ "Grade 2; Moderate",
+                           ae_grade == 3 ~ "Grade 3; Severe",
+                           ae_grade == 4 ~ "Grade 4; Life Threatening",
+                           ae_grade == 5 ~ "Grade 5; Death related to AE")) %>%
+  mutate(Type = case_when(ae_eoi == 1 ~ "EOI",
+                             ae_eoi == 0 ~ "AE")) %>%
+  left_join(., ctcae_terms, by = c("ae_ctcae_term" = "ctcae_term_identifier")) %>%
+  rename("Study ID" = comet_study_id, "Weeks on Intervention" = presentweeknum, "Preferred Term" = ctcae_term) %>%
+  mutate("Days Open" = as.numeric(today()-ae_date)) %>%
+  arrange(`Days Open`) %>%
+  select("Study ID", Type, ae_event, ae_date_of_onset, "Days Open", Grade, Outcome, ae_pi_sign_line, ae_progress_note) %>%
+  rename(Event = ae_event, "Date of Onset" = ae_date_of_onset, Signature = ae_pi_sign_line, Notes = ae_progress_note) 
+
+
+if(nrow(ongoing_aes)>0)
+{
+  ongoing_aes %>%
+    addHtmlTableStyle(align = "c,c,l",
+                      col.rgroup = c("none", "#F7F7F7"),
+                      css.cell = "height: 10px; padding: 4px",
+                      css.header = "padding: 4px"
+    ) %>% 
+    htmlTable(., 
+              rnames = F,
+    )
+} else {
+  cat(paste0("No open AEs"))
+}
+
+
+```
+</center><br>
+
+### Upcoming Enrollments
+
+<center>
+```{r upcoming_enrollments, echo=FALSE, message=FALSE}
+
+baseline_aes <- adverse_event %>%
+  filter(redcap_event_name == "safety_and_monitor_arm_1")
+
+baseline_participants <- comet_scientist_markdown %>%
+  filter(baseline_status == 1 & is.na(group)) %>%
+  left_join(., baseline_aes, by = "record_id") %>%
+  mutate(`Adverse Event` = case_when(!is.na(adverse_event_complete) ~ "Yes",
+                                     TRUE ~ "No")) %>%
+  arrange(comet_baselinegxtsched) %>%
+  select(comet_study_id, comet_baselinegxtsched, `Adverse Event`) %>%
+  rename("Study ID" = comet_study_id, "GXT Test Date" = comet_baselinegxtsched)
+
+upcoming_enrollments <- comet_scientist_markdown %>%
+  filter(today() + 42 > comet_baselinegxtsched & is.na(group) & is.na(baseline_status)) %>%
+  mutate(week = isoweek(comet_baselinegxtsched)) %>% 
+  mutate(year = year(comet_baselinegxtsched))  %>% 
+  group_by(week, year) %>% 
+  count() %>%
+  rename(`Expected Enrollments` = n) %>%
+  mutate(day = 1) %>%
+  ungroup() %>%
+  mutate(Date = as.Date(paste(year,week,day),format="%Y %W %u")) %>%
+  select(Date, `Expected Enrollments`)
+
+
+gt(baseline_participants) %>%
+  tab_header("Participants in Baseline Testing") %>%
+    tab_options(
+    column_labels.font.size = "90%",
+    table.font.size = "90%",
+    data_row.padding = px(3)
+  )
+
+gt(upcoming_enrollments) %>%
+  tab_header("Scheduled but not yet consented") %>%
+    tab_options(
+    column_labels.font.size = "smaller",
+    table.font.size = "smaller",
+    data_row.padding = px(3)
+  )
+  
+
+
+
+```
+</center><br>
+
+### Enrollment Pipeline
+
+Over the last 6 months, `r percent_success2$percent[which(percent_success2$scrn_elig == 0)]` of phone screens have been eligible, `r percent_success2$percent[which(percent_success2$scrn_elig == 1)]` have been ineligible, and `r percent_success2$percent[which(percent_success2$scrn_elig == 2)]` are on hold. 
+
+Consider checking out the potential enrollment issues. Either it has been 60 days since their phone screen and no visits have been scheduled or their scheduled baseline cog is in the past. To see a full report of enrollment see the 'enrollment_report_from_scientist_email.csv' in the reports folder. 
+<center>
+```{r enrollment_pipeline, echo=FALSE, message=FALSE}
+
+enrollment_pipeline <- comet_scientist_markdown %>%
+  mutate(waiting_on_phone_screen = case_when(is.na(scrn_date) ~ 1,
+                                             TRUE ~ 0)) %>%
+  mutate(in_baseline = case_when(!is.na(consent_1_date) & is.na(group) & (now() - comet_baselinemrisched) < 0 ~ 1,
+                                 TRUE ~ 0)) %>%
+  mutate(scheduled = case_when(is.na(consent_1_date) & !is.na(comet_baselinecogsched) ~ 1,
+                               TRUE ~ 0)) %>%
+  mutate(eligible_in_process  = case_when((is.na(scrn_elig) | scrn_elig ==  0) & !is.na(scrn_date) & is.na(comet_baselinecogsched) ~ 1,
+                                          TRUE ~ 0)) %>%
+  mutate(temporary_hold = case_when(scrn_elig == 2 ~ 1,
+                                    TRUE ~ 0)) 
+
+
+enrollment_pipeline2 <- enrollment_pipeline %>%
+  select(in_baseline, scheduled, eligible_in_process, waiting_on_phone_screen, temporary_hold) %>%
+  summarize_all(sum) %>%
+  rename(`Currently in baseline testing` = in_baseline, `Scheduled but not yet consented` = scheduled, `Eligible and in process of scheduling` = eligible_in_process, `Temporary hold` = temporary_hold, `To Be Phone Screened` = waiting_on_phone_screen)
+
+
+enrollment_pipeline2 %>%
+  addHtmlTableStyle(align = "c",
+                    col.rgroup = c("none", "#F7F7F7"),
+                    css.cell = "height: 10px; padding: 4px",
+                    css.header = "padding: 20px"
+  ) %>%
+  htmlTable(.,
+            rnames = F,
+  )
+
+enrollment_export <- enrollment_pipeline %>%
+  filter(waiting_on_phone_screen == 1 | in_baseline == 1 | scheduled == 1 | eligible_in_process == 1 | temporary_hold == 1) %>%
+  select(record_id, scrn_date, scrn_elig, consent_1_date, in_baseline, scheduled, eligible_in_process, waiting_on_phone_screen, temporary_hold, comet_baselinecogsched, comet_baselinegxtsched,) %>%
+  arrange(scrn_date)
+
+export(enrollment_export, file = file.path(report_dir,'enrollment_report_from_scientist_email.csv'))
+
+enrollment_issues <- enrollment_export %>%
+  filter((eligible_in_process == 1 & today() - scrn_date > 60) | (scheduled == 1 & now() - comet_baselinecogsched > 24 )) %>%
+  select(-waiting_on_phone_screen, -in_baseline, -scheduled, -eligible_in_process, -temporary_hold)
+
+
+gt(enrollment_issues) %>%
+  tab_header("Potential Enrollment Issues") %>%
+    tab_options(
+    column_labels.font.size = "smaller",
+    table.font.size = "smaller",
+    data_row.padding = px(3)
+  )
+```
+</center><br>
+
+
+
+### Screening Demographics Chart
+
+COMET believes that a trial cannot be successful without diversity, inclusivity, and equity. According to Ch 2.1 of the MOP, we are trying to enroll a representative sample - approximately 11.1% Black, 2.8% Hispanic, 1.5% Asian. Every effort should be made to over recruit individuals traditionally underrepresented in clinical research, including ethno-racial minorities and rural dwelling individuals.
+
+Note: These tables show demographics of screened participants. 
+
+<center>
+```{r inclusion_screening, echo=FALSE, message=FALSE}
+
+#Source  https://www.ers.usda.gov/data-products/rural-urban-commuting-area-codes/
+#Updated on 8/18/22 with a new list from EDV
+rural_zips <- import(file.path(data_dir,'dsmc_report','forhp-eligible-zips.xlsx')) %>%
+  pull(ZIP_CODE)
+
+screened_df <- screened %>%
+    mutate(race = case_when(race_added == 0 ~ NA_character_,
+                          race_added == 1 ~ "White",
+                          race_added == 2 ~ "Black, African American, or African",
+                          race_added == 4 ~ "Asian",
+                          race_added == 8 ~ "American Indian or Alaska Native",
+                          race_added == 16 ~ "Native Hawaiian or Other Pacific Islanders",
+                          race_added == 32 ~ "None of these fully describe me",
+                          race_added == 64 ~ "Prefer not to answer",
+                          race_added == 256 ~ "Middle Eastern or North African",
+                          race_added == 5 ~ "Asian and White",
+                          race_added == 3 ~ "Black, African American, or African and White",
+                          is.na(race_added) ~ NA_character_,
+                          TRUE ~ "Other - need to update")) 
+
+test <- screened_df  %>%
+  mutate(Rural = case_when(scrn_address_zip %in% rural_zips ~ "Rural",
+                           T ~ "Not Rural")) %>%
+  select(race, ethnicity, gender, Rural, scrn_age) %>%
+  rename(Race = race, Ethnicity = ethnicity, Gender = gender, Age = scrn_age)
+
+
+gtsummary::tbl_summary(test,
+                       statistic = all_continuous() ~ "{mean}, {sd} ({min} - {max})",
+                       type = list(Age ~ "continuous")) %>%
+  as_gt() %>%
+  tab_options(table.font.size = 12) %>%
+  tab_header("Demographics - Screened") 
+
+
+```
+</center><br>
+
+### Enrollment Inclusion Chart
+
+Note: These tables show demographics of enrolled participants
+<center>
+```{r inclusion2, echo=FALSE, message=FALSE}
+#Source  https://www.ers.usda.gov/data-products/rural-urban-commuting-area-codes/
+rural_zips <- import(file.path(data_dir,'dsmc_report','forhp-eligible-zips.xlsx')) %>%
+  pull(ZIP_CODE)
+
+enrolled_df <- randomized 
+
+test <- enrolled_df  %>%
+  mutate(Rural = case_when(scrn_address_zip %in% rural_zips ~ "Rural",
+                           T ~ "Not Rural")) %>%
+  select(race, ethnicity, gender, Rural, age) %>%
+  rename(Race = race, Ethnicity = ethnicity, Gender = gender, Age = age)
+
+gtsummary::tbl_summary(test,
+                       statistic = all_continuous() ~ "{mean}, {sd} ({min} - {max})",
+                       type = list(Age ~ "continuous")) %>%
+  as_gt() %>%
+  tab_options(table.font.size = 12) %>%
+  tab_header("Demographics - Enrolled") 
+
+```
+</center><br>
+
+### Consort Diagram {.tabset}
+<br>
+
+Note: If this consort diagram isn't showing, try opening the email in a desktop Outlook client, then right clicking on the "If there are problems" banner and selecting "View in Browser."
+<center>
+```{r Consort, echo=FALSE, message=FALSE, warning=FALSE}
+
+
+knitr::include_graphics(file.path(data_dir,'dsmc_report','open_consort_screen.png'), dpi = 6.92)
+knitr::include_graphics(file.path(data_dir,'dsmc_report','open_consort_enrolled.png'), dpi = 6.92)
+
+
+phone_screen_otx <- comet_scientist_markdown %>%
+  filter(is.na(scrn_drop_reason_otx) == F & scrn_drop_reason_otx != '') %>%
+  select(record_id, scrn_drop_reason_otx) %>%
+  rename("Other" = scrn_drop_reason_otx)
+
+screen_fail_reason_markdown <- screen_failed %>%
+  mutate(age_inelig = case_when(scrn_age >= 81 ~ 1,
+                                TRUE ~ 0)) %>%
+  mutate(tics_inelig = case_when(scrn_tics_score <= 25 ~ 1,
+                                 TRUE ~ 0)) %>%
+  mutate(scrn_reschedule = case_when(scrn_reschedule == 1 ~ 0,
+                                     scrn_reschedule == 2 ~ 1)) %>%
+  mutate(scrn_drop_reason = as.numeric(scrn_drop_reason)) %>%
+  mutate(`Reason` = case_when(age_inelig == 1 ~ "Age",
+                              tics_inelig == 1 ~ "TICS < 25",
+                              scrn_reschedule == 1 ~ "Not Interested - No Reason",
+                              scrn_drop_reason == 1 ~ "Too Busy",
+                              scrn_drop_reason == 2 ~ "Distance to Study Activities",
+                              scrn_drop_reason == 3 ~ "Discomfort with Procedures",
+                              scrn_drop_reason == 4 ~ "Disinterest in Study Premise",
+                              scrn_drop_reason == 6 | scrn_drop_reason == 8 ~ "Health Concerns - Personal",
+                              scrn_drop_reason == 7 ~ "Health Concerns - Family",
+                              scrn_drop_reason == 9 ~ "COVID Concerns",
+                              scrn_drop_reason == 10 ~ "Lost to follow-up",
+                              scrn_drop_reason == 5 ~ "Other",
+                              scrn_en_fluence == 1 ~ "Not English Speaking",
+                              scrn_out == 1 ~ "Travel more than 4 weeks",
+                              scrn_transport == 1 ~ "Reliable Transport",
+                              scrn_joint_pain == 1 ~ "Joint Pain",
+                              scrn_phy_move_free == 1 ~ "Assistive Walking Device",
+                              scrn_overhead == 1 ~ "Joint Pain",
+                              scrn_mri_attempt == 1 ~ "MRI Attempt",
+                              scrn_mri_implant == 1 ~ "MRI Eligibility",
+                              scrn_mri_metal == 1 ~ "MRI Eligibility",
+                              scrn_med_subst == 1 ~ "Substance Abuse",
+                              scrn_cancer_treat == 1 ~ "Cancer",
+                              scrn_med_diab == 1 ~ "Insulin",
+                              scrn_heart_treat == 1 ~ "Cardiac Issue",
+                              scrn_med_neuro == 1 ~ "Neurological Issue",
+                              scrn_htn_treat_ch == 1 ~ "Blood Pressure Meds",
+                              scrn_rapamod == 1 ~ "Too Active",
+                              scrn_rapavig == 1 ~ "Too Active",
+                              scrn_rapa_st == 1 ~ "Too Active",
+                              scrn_pcp_clear_response == 1 ~ "No Physician Clearance")) 
+
+
+
+
+```
+
+
+#### Screen Fail by Gender
+```{r Consort_gender, echo=FALSE, message=FALSE, warning=FALSE}
+gender <- screen_fail_reason_markdown %>%
+  select(gender, Reason)
+
+gtsummary::tbl_summary(gender, by = gender) %>%
+  add_overall() %>%
+  as_gt() %>%
+  tab_options(table.font.size = 12) %>%
+  tab_header("Screen Fail Reason") 
+
+phone_screen_otx %>%
+  addHtmlTableStyle(align = "c",
+                    col.rgroup = c("none", "#F7F7F7"),
+                    css.cell = "height: 10px; padding: 4px",
+                    css.header = "padding: 20px"
+  ) %>%
+  htmlTable(.,
+            rnames = F,
+  )
+
+
+
+```
+
+#### Screen Fail by Race & Ethinicity
+```{r Consort_race, echo=FALSE, message=FALSE, warning=FALSE}
+race <- screen_fail_reason_markdown %>%
+  select(race, Reason)
+
+gtsummary::tbl_summary(race, by = race)  %>%
+  add_overall() %>%
+  as_gt() %>%
+  tab_options(table.font.size = 12) %>%
+  tab_header("Screen Fail Reason") 
+
+phone_screen_otx %>%
+  addHtmlTableStyle(align = "c",
+                    col.rgroup = c("none", "#F7F7F7"),
+                    css.cell = "height: 10px; padding: 4px",
+                    css.header = "padding: 20px"
+  ) %>%
+  htmlTable(.,
+            rnames = F,
+  )
+
+
+
+```
+
+</center><br>
+

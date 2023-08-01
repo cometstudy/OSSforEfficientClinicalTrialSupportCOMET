@@ -1,0 +1,1415 @@
+---
+output: 
+  html_document:
+    toc: TRUE
+
+---
+
+```{r setup, include=FALSE}
+#' @section Copyright: 
+#' Copyright © 2021 University of Kansas
+
+##### Declare Libraries #####
+library(rio)
+library(httr)
+library(lubridate)
+library(tidyverse)
+library(htmlTable)
+library(R.utils)
+library(gtools)
+library(flextable)
+
+###### Build Root Server #####  
+if(Sys.info()["nodename"]=="workstation_1" & Sys.info()["user"]=="noreply") {
+  root_p <- file.path("drive")
+  root_server_dir <- file.path(root_p,"study_dir_a")
+  python_cmd_prefix <- "py "
+} else if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+  root_p <- ""
+  # root_server_dir <- file.path(root_p,"ADC_Data")
+  root_server_dir <- file.path(root_p,"COMET")
+  python_cmd_prefix <- "python "
+}
+
+###### Load Directories #####
+load(file.path(root_server_dir,'study_dir_a','COMET','data','clean','directories.Rdata'))
+
+###### Load Data #####
+load(file.path(data_dir,'clean','comet_clean.Rdata'))
+load(file.path(data_dir,'clean','ex_min_clean.Rdata'))
+load(file.path(data_dir,'clean','adherence.Rdata'))
+
+##### COMET database (test entry removed) ######
+comet_coordinator_markdown <- comet %>%
+  mutate(Status = case_when(intervention_status == 1 ~ "Actively on intervention",
+                            intervention_status == 2 ~ "Successfully completed",
+                            intervention_status == 3 ~ "Withdrawn willing to complete testing",
+                            intervention_status == 4 ~ "Withdrawn unwilling to complete testing",
+                            intervention_status == 5 ~ "Lost to Follow-up",
+                            intervention_status == 6 ~ "Terminated Early"))  %>%
+  mutate(group_name = case_when(group == 2 ~ "Toning",
+                           group == 3 ~ "Endurance", 
+                           group == 4 ~ "Resistance",
+                           group == 5 ~ "Combo"))
+#mutate_at(vars(contains("date")), ~ as.Date(.))  
+
+##### COMET baseline only events  
+comet_baseline <- comet %>%
+  filter(redcap_event_name == "baseline_arm_1") #%>%
+#mutate_at(vars(contains("date")),~ as.Date(.))
+
+#Options
+options(digits = 2)
+
+##### Missing Data Global Data ####
+comet_participants <- comet %>%
+  filter(is.na(comet_study_id) == F) %>%
+  filter(redcap_event_name == "baseline_arm_1", is.na(comet_interventionstart) == F, presentweeknum > 1) %>%
+  filter(status___6 == 0 & status___7 == 0 & status___8 == 0 & status___9 == 0) 
+
+missing <- data.frame()
+
+for(i in 1:nrow(comet_participants))
+{
+  current <- comet_participants[i,] 
+  
+  current_ex_log <- exercise_log %>%
+    filter(comet_study_id == current$comet_study_id) %>%
+    mutate(log_monday = as.character(log_monday))
+  
+  missing_current <- as.data.frame(c(1:(current$presentweeknum-1))) %>%
+    rename(weeknum = c(1)) %>%
+    mutate(comet_study_id = current$comet_study_id) %>%
+    mutate(log_monday = as.character(current$comet_interventionstart+(weeknum-1)*7)) %>%
+    anti_join(current_ex_log, temp, by="log_monday")
+  
+  missing <- missing %>% bind_rows(missing_current)
+} 
+
+#### Ongoing AEs #####
+ongoing_aes <- adverse_event %>%
+  filter(adverse_event_complete != 2) %>%
+  arrange(desc(ae_date)) %>%
+  filter(!duplicated(record_id)) %>%
+  select(record_id, ae_event, ae_date_of_onset)
+
+
+
+
+```
+
+```{r logo, echo = FALSE,  fig.show = "hold", out.width = "25%", fig.align = "center"}
+    knitr::include_graphics(file.path(data_dir,'participant_email','COMETLogo.jpg'))
+  
+```
+
+
+**Hi Study Coordinators!**<br>
+
+Welcome to the the weekly COMET report. Often times, the report is formatted strangely. To see the report correctly formatted, open the attached "COMET Study Coordinator Email.html" file. 
+
+Building this report will be an ongoing project. Please let me know if there is anything we can add to this report to make your job easier.
+
+This report was generated on `r today()`.
+  
+
+<br>
+
+### Ineligible Participants with missing phone screens
+
+These participants are not accounted for in the consort diagram. Mark a reason as to why they are ineligible in their phone screen. 
+<center>
+```{r ps_ineligible_missing_reason, echo=FALSE}
+
+  phone_screen_screen_fail <- comet_coordinator_markdown %>%
+    filter(scrn_elig == 1) %>%
+    mutate(age_inelig = case_when(scrn_age >= 81 ~ 1,
+                                  TRUE ~ 0)) %>%
+    mutate(tics_inelig = case_when(scrn_tics_score <= 25 ~ 1,
+                                  TRUE ~ 0)) %>%
+    mutate(scrn_reschedule = case_when(scrn_reschedule == 1 ~ 0,
+                                       scrn_reschedule == 2 ~ 1)) %>%
+      select(record_id, scrn_reschedule, age_inelig, scrn_drop_reason, scrn_en_fluence, scrn_out, scrn_transport, scrn_overhead, scrn_mri_attempt, scrn_mri_implant, scrn_joint_pain, scrn_mri_metal, scrn_med_subst, scrn_cancer_treat, scrn_med_diab, scrn_heart_treat, scrn_med_neuro, scrn_htn_treat_ch, scrn_rapavig, scrn_rapamod, scrn_rapa_st, tics_inelig, scrn_pcp_contact) %>%
+    pivot_longer(., cols = c(scrn_reschedule, age_inelig, scrn_drop_reason, scrn_en_fluence, scrn_out, scrn_transport, scrn_overhead, scrn_mri_attempt, scrn_mri_implant, scrn_joint_pain, scrn_mri_metal, scrn_med_subst, scrn_cancer_treat, scrn_med_diab, scrn_heart_treat, scrn_med_neuro, scrn_htn_treat_ch, scrn_rapamod, scrn_rapavig, scrn_rapa_st, tics_inelig, scrn_pcp_contact)) %>%
+    filter(`value` >= 1 )
+
+  phone_screen_mistakes <- comet_coordinator_markdown %>%
+    filter(scrn_elig == 1) %>%
+    select(record_id) %>%
+    anti_join(., phone_screen_screen_fail, by = c('record_id'))
+  
+
+  if(nrow(phone_screen_mistakes)>0)
+  {
+    phone_screen_mistakes %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>%
+      htmlTable(.,
+                rnames = F,
+      )
+  } else {
+    cat(paste0("None Missing"))
+  }
+  
+  phone_screen_dates <- comet_coordinator_markdown %>%
+    filter(scrn_elig == 0 | scrn_elig == 1) %>%
+    filter(is.na(scrn_date))
+  
+    if(nrow(phone_screen_mistakes)>0)
+  {
+    phone_screen_mistakes %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>%
+      htmlTable(.,
+                rnames = F,
+      )
+  } else {
+    cat(paste0("None Missing"))
+  }
+
+    
+
+```
+</center><br>
+
+<br>
+
+### Baseline Timeline Tracker
+
+This section is under construction.
+
+Important Timeline Dates
+
+* 90 days between consent and initiation of exercise (Protocol 1.8)
+* No more than 20 days between randomization and initiation of exercise (Protocol 1.8)
+* 35 days between GXT and initiation of exercise (Best Practice)
+* If EOI Occurs
+  * Greater than 180 days between initial testing and resolution of hold, repeat all testing
+  * Greater than 45 days between initial testing and resolution of hold, repeat maximal aerobic exercise testing, 1-repetition maximum strength testing, and blood
+  
+ 
+ 
+<center>
+```{r baseline_timeline_tracker, echo=FALSE, warning=FALSE}
+
+baseline_timeline <- comet_baseline %>%
+  filter((baseline_status == 1 | baseline_status == 2)  &
+         (today() < comet_interventionstart |  is.na(comet_interventionstart))) %>%
+  select(record_id, comet_study_id, consent_1_date, ex_gxt_1_time, randomization_date ,comet_interventionstart, group) %>%
+  mutate(days_since_consent = case_when(!is.na(consent_1_date) ~ as.numeric(today() - consent_1_date),
+                                        T ~ -1), 
+         days_since_gxt = case_when(!is.na(ex_gxt_1_time) ~  as.numeric(today() - as_date(ex_gxt_1_time)),
+                                    T ~ -1),
+         randomization_to_exercise = case_when(!is.na(randomization_date) ~ as.numeric(today() - randomization_date),
+                                               T ~ -1))%>%
+  mutate(must_start_by = case_when(is.na(randomization_date) ~ format(consent_1_date + days(90), "%m-%d-%Y"),
+                                   !is.na(randomization_date) ~ format(as_date(randomization_date) + days(20), "%m-%d-%Y"))) %>%
+  mutate(best_practice_start_by = case_when(is.na(randomization_date) & is.na(ex_gxt_1_time) ~ format(consent_1_date + days(90), "%m-%d-%Y"),
+                                   is.na(randomization_date) ~ format(as_date(ex_gxt_1_time) + days(35), "%m-%d-%Y"),
+                                   as_date(ex_gxt_1_time) + days(35) < as_date(randomization_date) + days(20) ~ format(as_date(ex_gxt_1_time) + days(35), "%m-%d-%Y"),
+                                   T ~ format(as_date(randomization_date) + days(20), "%m-%d-%Y"))) %>%
+  arrange(must_start_by) %>%
+  left_join(., ongoing_aes, by = "record_id") %>%
+  select(comet_study_id, must_start_by, days_since_consent, randomization_to_exercise, ae_event, ae_date_of_onset, best_practice_start_by, days_since_gxt)
+  
+  
+color_gxt <- scales::col_numeric(
+  palette = c("wheat","orange"),
+  domain = c(-1, 35))
+
+color_consent <- scales::col_numeric(
+  palette = c("wheat", "red"),
+  domain = c(-1, 90))
+
+color_rand <- scales::col_numeric(
+  palette = c("wheat", "red"),
+  domain = c(-1, 20))
+
+flextable(baseline_timeline) %>%
+  bg(., j = ~days_since_gxt, bg = color_gxt) %>%
+  bg(., j = ~days_since_consent, bg = color_consent) %>%
+  bg(., j = ~randomization_to_exercise, bg = color_rand) %>%
+  autofit() %>%
+  add_header_lines(., "Baseline Participants") %>%
+  align(align = "center", part = "header")
+
+
+
+```
+</center><br>
+
+<br>
+
+### Missing Beta-Blocker
+
+The following participants are missing an answer on the "Concurrent Medications" instrument to the "Is this participant on a beta-blocker?" question. Please correct them. Collecting heart rate depends on them. 
+<center>
+```{r beta_blocker, echo=FALSE}
+
+missing_beta_blocker <- comet_baseline %>%
+  filter(consent_1 == 1, baseline_status != 3) %>%
+  filter(is.na(meds_betablocker)) %>%
+  select(comet_study_id, meds_betablocker) %>%
+  arrange(comet_study_id)
+
+if(nrow(missing_beta_blocker)>0)
+  {
+    missing_beta_blocker %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>%
+      htmlTable(.,
+                rnames = F,
+      )
+  } else {
+    cat(paste0("None Missing"))
+  }
+
+    
+
+```
+</center><br>
+
+
+<br>
+
+### COVID-19 Reminder Calls
+
+Please call the following participants and complete their "COVID-19 Phone Screening" in REDCap. 
+
+As of 4.25.22 completed phone screens will be removed from the list. This function hasn't been fully tested so keep an eye out for issues. Let Jon know if there are any.
+<center>
+```{r covid_call, echo=FALSE}
+
+covid_screens_complete <- covid_screen %>%
+  filter(!is.na(screening_script)) %>%
+  mutate(name = case_when(redcap_event_name == "baseline_arm_1" ~ "comet_baselinecogsched",
+                          redcap_event_name == "week_26_arm_1" ~ "comet_week26cogsched",
+                          redcap_event_name == "week_52_arm_1" ~ "week52_earliest_visit"))
+
+covid_calls <- comet_coordinator_markdown %>%
+  mutate(week52_earliest_visit = case_when(is.na(comet_week52mrisched) & comet_week52cogsched < comet_week52gxtsched ~ comet_week52cogsched,
+                                           is.na(comet_week52mrisched) & comet_week52cogsched > comet_week52gxtsched ~ comet_week52gxtsched,
+                                           comet_week52cogsched < comet_week52gxtsched & comet_week52cogsched < comet_week52mrisched  ~ comet_week52cogsched,
+                                           comet_week52cogsched > comet_week52gxtsched & comet_week52gxtsched < comet_week52mrisched ~ comet_week52gxtsched,
+                                           T ~ comet_week52cogsched)) %>%
+  select(record_id, comet_baselinecogsched, comet_week26cogsched, week52_earliest_visit, redcap_event_name) %>%
+  pivot_longer(., cols = -c("record_id","redcap_event_name")) %>%
+  mutate(`Appointment Date` = value) %>%
+  mutate(week = week(`Appointment Date`)) %>%
+  filter(week == week(today()) | week == week(today()) +1) %>%
+  arrange(`Appointment Date`) %>%
+  anti_join(., covid_screens_complete, by = c("record_id", "name"))  %>%
+  mutate(timepoint = case_when(name == "comet_baselinecogsched" ~ "Baseline",
+                               name == "comet_week26cogsched" ~ "Week 26",
+                               name == "week52_earliest_visit" ~ "Week 52")) %>%
+  left_join(., comet_baseline, by = c("record_id","redcap_event_name")) %>%
+  select(comet_study_id, timepoint ,`Appointment Date` ) 
+
+
+  
+  if(nrow(covid_calls)>0)
+  {
+    covid_calls %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>%
+      htmlTable(.,
+                rnames = F,
+      )
+  } else {
+    cat(paste0("No upcoming covid calls"))
+  }
+
+
+
+```
+</center><br>
+
+### Visit Scheduling Phone calls
+
+The following tables show the visits in the next three months that need to be scheduled. The tables pull from the expected testing dates and the scheduled dates in REDCap. So, it is possible that you already scheduled a participant and forgot to update the scheduled date in REDCap. If this is the case, be sure to update and the visit will be removed from next week's report. Also, this is just a reminder to always keep the scheduled visits under study status up-to-date after cancellations or schedule changes. <br>
+
+Complete the Week 13 Phone Call Check-in when you schedule week 26 visits. Complete the Week 39 Phone Call Check-in when you schedule week 52 visits. 
+
+<center>
+```{r visits_to_schedule, echo=FALSE, warning=FALSE}
+
+visits26wk <- comet_coordinator_markdown %>%
+  filter(is.na(comet_study_id) == F) %>%
+  filter(redcap_event_name == "baseline_arm_1", is.na(comet_interventionstart) == F) %>%
+  filter(status___6 == 0 & status___8 == 0 & status___9 == 0) %>%
+  filter(presentweeknum >= 13 & presentweeknum < 36) %>%
+  filter(is.na(comet_week26cogsched)) %>%
+  select(comet_study_id, presentweeknum, comet_week26date, comet_week26cogsched) %>%
+  arrange(comet_week26date)
+
+visits52wk <- comet_coordinator_markdown %>%
+  filter(is.na(comet_study_id) == F) %>%
+  filter(redcap_event_name == "baseline_arm_1", is.na(comet_interventionstart) == F) %>%
+  filter(status___6 == 0  & status___8 == 0 & status___9 == 0) %>%
+  filter(presentweeknum >= 39) %>%
+  filter(is.na(comet_week52cogsched) | is.na(comet_week52gxtsched) | is.na(comet_week52mrisched) ) %>%
+  select(comet_study_id, presentweeknum, comet_week52date, comet_week52cogsched, comet_week52gxtsched, comet_week52mrisched) %>%
+  arrange(comet_week52date)
+  
+  if(nrow(visits26wk)>0) {
+    visits26wk %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>% 
+      htmlTable(., 
+                rnames = F,
+      )
+  } else {
+    cat(paste0("No 26 week appointments to schedule."))
+  }
+
+  if(nrow(visits52wk)>0) {
+    visits52wk %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>% 
+      htmlTable(., 
+                rnames = F,
+      )
+  } else {
+    cat(paste0("No 52 week appointments to schedule."))
+  }
+  
+    
+
+```
+</center><br>
+
+### Check-in Phone calls
+
+Please call the following participants to check in. 
+
+<center>
+```{r check-in_calls, echo=FALSE, warning=FALSE}
+
+comet_simple <- comet_coordinator_markdown %>%
+  select(record_id, comet_study_id, presentweeknum, comet_interventionstart, group_name, status___6, status___7, status___8, status___9)
+
+comet_phone <- comet_coordinator_markdown %>%
+  select(record_id, redcap_event_name, contains("phone"))
+
+phone_3 <- comet_simple %>%
+  filter(presentweeknum >= 3) 
+
+phone_3_2 <- comet_phone %>%
+  filter(redcap_event_name == "week_3_arm_1")  %>%
+  full_join(phone_3, ., by = c("record_id")) %>%
+  filter((is.na(phone_not_done) & is.na(phone_date)))  %>%
+  mutate(Date = comet_interventionstart + 14) %>%
+  mutate(Week = 3) %>%
+  select(Week, Date, record_id, comet_study_id, presentweeknum, phone_gennotes)
+
+phone_6 <- comet_simple %>%
+  filter(presentweeknum >= 6) 
+
+phone_6_2 <- comet_phone %>%
+  filter(redcap_event_name == "week_6_arm_1")  %>%
+  full_join(phone_6, ., by = c("record_id")) %>%
+  filter((is.na(phone_not_done) & is.na(phone_date)))  %>%
+  mutate(Date = comet_interventionstart + 5*7) %>%
+  mutate(Week = 6) %>%
+  select(Week, Date, record_id, comet_study_id, presentweeknum, phone_gennotes)
+
+
+phone_13 <- comet_simple %>%
+  filter(presentweeknum >= 13) 
+
+phone_13_2 <- comet_phone %>%
+  filter(redcap_event_name == "week_13_arm_1")  %>%
+  full_join(phone_13, ., by = c("record_id")) %>%
+  filter((is.na(phone_not_done) & is.na(phone_date)))  %>%
+  mutate(Date = comet_interventionstart + 12*7) %>%
+  mutate(Week = 13) %>%
+  select(Week, Date, record_id, comet_study_id, presentweeknum, phone_gennotes)
+
+phone_19 <- comet_simple %>%
+  filter(presentweeknum >= 19) 
+
+phone_19_2 <- comet_phone %>%
+  filter(redcap_event_name == "week_19_arm_1")  %>%
+  full_join(phone_19, ., by = c("record_id")) %>%
+  filter((is.na(phone_not_done) & is.na(phone_date)))  %>%
+  mutate(Date = comet_interventionstart + 18*7) %>%
+  mutate(Week = 19) %>%
+  select(Week, Date, record_id, comet_study_id, presentweeknum, phone_gennotes)
+
+phone_26 <- comet_simple %>%
+  filter(presentweeknum >= 26) 
+
+phone_26_2 <- comet_phone %>%
+  filter(redcap_event_name == "week_26_arm_1") %>%
+  full_join(phone_26, ., by = c("record_id")) %>%
+  filter((is.na(phone_not_done) & is.na(phone_date)))  %>%
+  filter(presentweeknum >= 26)  %>%
+  mutate(Date = comet_interventionstart + 25*7) %>%
+  mutate(Week = 26) %>%
+  select(Week, Date, record_id, comet_study_id, presentweeknum, phone_gennotes)
+
+phone_32 <- comet_simple %>%
+  filter(presentweeknum >= 32) 
+
+phone_32_2 <- comet_phone %>%
+  filter(redcap_event_name == "week_32_arm_1")  %>%
+  full_join(phone_32, ., by = c("record_id")) %>%
+  filter((is.na(phone_not_done) & is.na(phone_date)))  %>%
+  mutate(Date = comet_interventionstart + 31*7) %>%
+  mutate(Week = 32) %>%
+  select(Week, Date, record_id, comet_study_id, presentweeknum, phone_gennotes)
+
+phone_39 <- comet_simple %>%
+  filter(presentweeknum >= 39) 
+
+phone_39_2 <- comet_phone %>%
+  filter(redcap_event_name == "week_39_arm_1")  %>%
+  full_join(phone_39, ., by = c("record_id")) %>%
+  filter((is.na(phone_not_done) & is.na(phone_date)))  %>%
+  mutate(Date = comet_interventionstart + 38*7) %>%
+  mutate(Week = 39) %>%
+  select(Week, Date, record_id, comet_study_id, presentweeknum, phone_gennotes)
+
+phone_45 <- comet_simple %>%
+  filter(presentweeknum >= 45) 
+
+phone_45_2 <- comet_phone %>%
+  filter(redcap_event_name == "week_45_arm_1")  %>%
+  full_join(phone_45, ., by = c("record_id")) %>%
+  filter((is.na(phone_not_done) & is.na(phone_date)))  %>%
+  mutate(Date = comet_interventionstart + 44*7) %>%
+  mutate(Week = 45) %>%
+  select(Week, Date, record_id, comet_study_id, presentweeknum, phone_gennotes)
+
+
+check_in_phone_calls <- phone_3_2 %>%
+  bind_rows(., phone_6_2, phone_13_2, phone_19_2, phone_26_2, phone_32_2, phone_39_2, phone_45_2) 
+  
+phone_calls <- check_in_phone_calls %>%
+  select(-record_id, -presentweeknum) %>%
+  left_join(., comet_simple, by = "comet_study_id") %>%
+  filter(!is.na(comet_study_id)) %>%
+  filter(status___6 == 0 & status___8 == 0 & status___9 == 0) %>%
+  select(-Date, -record_id, -comet_interventionstart, -contains("status")) 
+
+
+
+  if(nrow(phone_calls)>0)
+  {
+    phone_calls %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>%
+      htmlTable(.,
+                rnames = F,
+      )
+  } else {
+    cat(paste0("No calls to make."))
+  }
+
+# 
+#   
+#     
+
+```
+</center><br>
+
+### Outstanding Surveys
+
+Expected, but missing week 26 and week 52 surveys are shown below. 
+<center>
+```{r oustanding_surveys, echo=FALSE}
+
+survey_baseline <- comet_coordinator_markdown %>%
+  select(record_id, comet_study_id, presentweeknum, intervention_status) %>%
+  filter(intervention_status == 1)
+
+week_26_surveys <- comet %>%
+  filter(redcap_event_name == "week_26_arm_1") %>%
+  select(record_id, barse_complete, exse_complete, lse_complete, pa_self_regulation_complete, godin_complete) %>%
+  mutate(sum_survey = barse_complete + exse_complete + lse_complete + pa_self_regulation_complete + godin_complete) %>%
+  left_join(., survey_baseline, by = "record_id") %>%
+  filter(presentweeknum >= 26, sum_survey < 10) %>%
+  filter(presentweeknum < 35) %>%
+  mutate(week_26_survey_status = case_when(sum_survey == 0 ~ "All Missing",
+                                   T ~ "Incomplete")) %>%
+  select(comet_study_id, presentweeknum, week_26_survey_status) %>%
+  arrange(comet_study_id)
+
+week_52_surveys <- comet %>%
+  filter(redcap_event_name == "week_52_arm_1") %>%
+  select(record_id, barse_complete, exse_complete, lse_complete, pa_self_regulation_complete, godin_complete) %>%
+  mutate(sum_survey = barse_complete + exse_complete + lse_complete + pa_self_regulation_complete + godin_complete) %>%
+  left_join(., survey_baseline, by = "record_id") %>%
+  filter(presentweeknum >= 52, sum_survey < 10) %>%
+  filter(presentweeknum < 61) %>%
+  mutate(week_52_survey_status = case_when(sum_survey == 0 ~ "All Missing",
+                                   T ~ "Incomplete")) %>%
+  select(comet_study_id, presentweeknum, week_52_survey_status) %>%
+  arrange(comet_study_id)
+
+
+  if(nrow(week_26_surveys)>0)
+  {
+    week_26_surveys %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>%
+      htmlTable(.,
+                rnames = F,
+      )
+
+  } else {
+    cat(paste0("No missing week 26 surveys"))
+  }
+
+  if(nrow(week_52_surveys)>0)
+  {
+    week_52_surveys %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>%
+      htmlTable(.,
+                rnames = F,
+      )
+    
+  } else {
+    cat(paste0("No missing week 52 surveys"))
+  }
+
+
+
+
+
+```
+</center><br>
+
+### Watch Wear Issues
+
+There are potential issues with the following watches. No HR has been recorded for 5 days. In some cases the watches might still be syncing. To see last wear date, see last_wear. For the last sync date, see last_sync under wear time.
+<center>
+```{r sync_data, echo=FALSE}
+
+status <- comet_coordinator_markdown %>%
+  filter(redcap_event_name == "baseline_arm_1") %>%
+  mutate(`Baseline Status` = case_when(baseline_status == 1 ~ "Currently Screening",
+                                       baseline_status == 2 ~ "Ready to randomize",
+                                       baseline_status == 3 ~ "Screen Fail",
+                                       baseline_status == 4 ~ "Withdrawal")) %>%
+  mutate(`Intervention Status` = case_when(intervention_status == 1 ~ "Actively on intervention",
+                                           intervention_status == 2 ~ "Successfully completed",
+                                           intervention_status == 3 ~ "Withdrawn willing to complete testing",
+                                           intervention_status == 4 ~ "Withdrawn unwilling to complete testing",
+                                           intervention_status == 5 ~ "Lost to Follow-up",
+                                           intervention_status == 6 ~ "Terminated Early"))  %>%
+  select(comet_study_id, record_id, `Baseline Status`,`Intervention Status`)
+
+
+last_sync <- hr_all_df %>%
+  group_by(comet_study_id) %>%
+  summarize(last_sync = max(date)) %>%
+  filter(comet_study_id != 0) 
+
+last_wear <- hr_all_df %>%
+  group_by(comet_study_id) %>%
+  filter(!is.na(minutes_worn))  %>%
+  summarize(last_wear = max(date))  %>%
+  filter(comet_study_id != 0) %>%
+  filter(today() - last_wear >= 5) %>%
+  left_join(., status, by = "comet_study_id") %>%
+  left_join(., last_sync, by = "comet_study_id") %>%
+  filter(`Intervention Status` == "Actively on intervention") %>%
+  left_join(., ongoing_aes, by = "record_id") %>%
+  select(comet_study_id, last_wear, last_sync, `Baseline Status`, `Intervention Status`, ae_date_of_onset, ae_event, -record_id) 
+
+  if(nrow(last_wear)>0)
+  {
+    last_wear %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>% 
+      htmlTable(., 
+                rnames = F,
+      )
+  } else {
+    cat(paste0("All Fitbits up to date"))
+  }
+
+    
+
+```
+</center><br>
+
+
+</center><br>
+
+### Notes from Participants
+
+All of the notes reported from last week's exercise logs are reported below. If any elevate to an AE or warrant a call, please follow up.
+<center>
+```{r notes, echo=FALSE}
+
+
+notes <- exercise_log %>%
+  select(log_today_date, comet_study_id, log_monday, log_notes_init) %>%
+  filter(log_today_date > today() - 14) %>%
+  filter(log_notes_init != "") %>%
+  arrange(comet_study_id)
+
+  if(nrow(notes)>0)
+  {
+    notes %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>% 
+      htmlTable(., 
+                rnames = F,
+      )
+  } else {
+    cat(paste0("Nothing in table"))
+  }
+
+
+```
+</center><br>
+
+
+### Potential AEs
+
+The following participants reported experiencing a new illness, injury, or medication change in the last week. Please followup as necessary
+<center>
+```{r potential_aes, echo=FALSE}
+
+
+potential_aes <- exercise_log %>%
+  select(log_today_date, comet_study_id, log_monday, log_ae_report_init, log_ae_description_init) %>%
+  filter(log_today_date > today() - 15) %>%
+  filter(log_ae_report_init == 1) %>%
+  arrange(comet_study_id, desc(log_today_date))
+
+  if(nrow(potential_aes)>0)
+  {
+    potential_aes %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>% 
+      htmlTable(., 
+                rnames = F,
+      )
+  } else {
+    cat(paste0("No potential AEs"))
+  }
+
+
+```
+</center><br>
+
+### Missing Data
+
+For a full list of missing data see the "missing_exercise_data.csv" file in the reports folder.
+
+<center>
+```{r missing_data, echo=FALSE}
+
+export(missing, file = file.path(report_dir,'missing_exercise_data.csv'))
+
+missing2 <- missing %>%
+  group_by(comet_study_id) %>%
+  count(., name = "Number of Missing Weeks") %>%
+  arrange(desc(`Number of Missing Weeks`)) %>%
+  left_join(., comet_coordinator_markdown, by = "comet_study_id") %>%
+  left_join(., ongoing_aes, by = "record_id") %>%
+  select(comet_study_id, `Number of Missing Weeks`, presentweeknum, ae_date_of_onset, ae_event) %>%
+  filter(`Number of Missing Weeks` != 1)
+
+if(nrow(missing2)>0)
+{
+  missing2 %>%
+    addHtmlTableStyle(align = "c",
+                      col.rgroup = c("none", "#F7F7F7"),
+                      css.cell = "height: 10px; padding: 4px",
+                      css.header = "padding: 4px"
+    ) %>% 
+    htmlTable(., 
+              rnames = F,
+    )
+} else {
+  cat(paste0("Nothing missing weeks"))
+}
+
+
+```
+</center><br>
+
+### Exercise Adherence according to Exercise Log
+
+
+<center>
+```{r exercise_adherence_log, echo=FALSE, fig.width = 14, include=FALSE}
+#' 12.20.22 Rewriting this to use our adherence script. Commenting out. JC
+
+# message("start ex adherence log")
+# 
+# aerobic_goal <-
+#   data.frame(
+#     week = 1:52,
+#     goal = c(
+#       60,
+#       75,
+#       90,
+#       105,
+#       120,
+#       135,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150,
+#       150
+#     ),
+#     comet_study_id = 0
+#   ) %>%
+#   mutate(data_group = "Exercise Log")
+# 
+# ##### Summary Activities DF #####
+# summary_activities <- activities_all_df %>%
+#   left_join(., comet_baseline, by = c("comet_study_id")) %>%
+#   mutate(week = floor(difftime(as.Date(startDate), comet_interventionstart, units = c("weeks")))+1) %>%
+#   mutate(duration = round(duration / 60 / 1000, digits = 0)) %>%
+#   filter(startDate >= today() - 28) %>%
+#   filter(week >  0) %>%
+#   filter(as.numeric(week) != presentweeknum & as.numeric(week) != presentweeknum - 8 ) %>%
+#   filter(intervention_status == 1) %>%
+#   filter(status___6 == 0 & status___7 == 0 & status___8 == 0 & status___9 == 0)
+# 
+# ##### Summary Exercise Log DF #####
+# comet_to_join <- comet_coordinator_markdown %>%
+#   filter(!is.na(presentweeknum)) %>%
+#   filter(status___6 == 0 & status___7 == 0 & status___8 == 0 & status___9 == 0) %>%
+#   select(comet_study_id, presentweeknum, group)
+# 
+# missing_to_join <- missing %>%
+#   select(-log_monday) %>%
+#   mutate(log_st_min = -25, log_aex_min = -25, log_rt_min = -25) %>%
+#   left_join(., comet_to_join, by = "comet_study_id") %>%
+#   rename("log_group" = group)
+# 
+# summary_activities_ex_log <- exercise_log %>%
+#   left_join(., comet_to_join, by = "comet_study_id") %>%
+#   rename("weeknum" = log_weeknum) %>%
+#   bind_rows(., missing_to_join) %>%
+#   filter(weeknum >= presentweeknum - 4) %>%
+#   mutate(data_group = case_when(!is.na(log_today_date) ~ "Exercise Log",
+#                                 TRUE ~ "Missing"))
+# 
+# 
+# ##### Core and Fusion dataframe and plot #######
+# cf_activities_ex_log <- summary_activities_ex_log %>%
+#   filter(log_group == 2)
+# 
+# cf_activities_ex_log %>% ggplot(., aes(weeknum, log_st_min, color = data_group, label = comet_study_id)) +
+#   geom_point() +
+#   scale_colour_manual(values = c("#000000","#b20000")) +
+#   expand_limits(y = -10,x = 0) +
+#   geom_abline(slope = 0, intercept = 150, linetype = 3) +
+#   labs(x = "Week", y = "Weekly Exercise Minutes", title = "Core and Fusion Group - Exercise Log") +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   geom_label() +
+#   ylim(-30, 400) + 
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+# 
+# cf_activities <- summary_activities %>%
+#   filter(group == 2) %>%
+#   filter(activityParentName == "Yoga") %>%
+#   group_by(week, comet_study_id) %>%
+#   summarize(ex_min = sum(duration)) 
+#   
+# cf_activities %>% ggplot(., aes(week,ex_min, color = comet_study_id, label = comet_study_id)) + 
+#   geom_point() +
+#   expand_limits(y = 0,x = 0) +
+#   geom_abline(slope = 0, intercept = 150, linetype = 3) +
+#   labs(x = "Week", y = "Weekly Exercise Minutes", title = "Core and Fusion Group -  Fitbit") +
+#   theme(plot.title = element_text(hjust = 0.5)) + 
+#   geom_label() +
+#   ylim(-30, 400) +
+#   theme_bw() +
+#     theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+# 
+# ###### Endurance Data frame and plot ######
+# endurance_activities1 <- summary_activities_ex_log %>%
+#   filter(log_group == 3) 
+# 
+# endurance_goal <- aerobic_goal %>%
+#   filter(week <= max(endurance_activities1$week)) 
+# 
+# endurance_activities1 %>% ggplot(., aes(weeknum, log_aex_min, color = data_group, label = comet_study_id)) +
+#   geom_point() +
+#   scale_colour_manual(values = c("#000000","#b20000")) +
+#   geom_line(data = endurance_goal, mapping = aes(x = week, y = goal), linetype = 3) +
+#   expand_limits(y = 0,x = 1) +
+#   labs(x = "Weeks", y = "Weekly Exercise Minutes", title = "Endurance Group - Exercise Log") +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   geom_label() +
+#   ylim(-30, 400) + 
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+# 
+# endurance_activities <- summary_activities %>%
+#   filter(group == 3) %>%
+#   filter(activityParentName == "Workout") %>%
+#   group_by(week, comet_study_id) %>%
+#   summarize(ex_min = sum(duration)) 
+# 
+# 
+#   
+# endurance_activities %>% ggplot(., aes(week,ex_min, color = comet_study_id, label = comet_study_id)) + 
+#   geom_point() +
+#   geom_line(data = endurance_goal, mapping = aes(x = week, y = goal), linetype = 3) +
+#   expand_limits(y = 0,x = 1) +
+#   labs(x = "Weeks", y = "Weekly Exercise Minutes", title = "Endurance Group - Fitbit") +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   geom_label() + 
+#   ylim(-30, 400) + 
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+# 
+# ###### Weight Training Group  ######
+# weight_activities1 <- summary_activities_ex_log %>%
+#   filter(log_group == 4) 
+# 
+# weight_activities <- summary_activities %>%
+#   filter(group == 4) %>%
+#   filter(activityParentName == "Weights") %>%
+#   group_by(week, comet_study_id) %>%
+#   summarize(ex_min = sum(duration)) 
+# 
+# weight_activities1 %>% ggplot(., aes(weeknum, log_rt_min, color = data_group, label = comet_study_id)) +
+#   geom_point() +
+#   scale_colour_manual(values = c("#000000","#b20000")) +
+#   geom_abline(slope = 0, intercept = 70, linetype = 3) +
+#   expand_limits(y = 0,x = 1) +
+#   labs(x = "Weeks", y = "Weekly Exercise Minutes", title = "Resistance Group - Weights - Exercise Log") +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   geom_label() +
+#   ylim(-30, 400) + 
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+# 
+# weight_activities %>% ggplot(., aes(week,ex_min, color = comet_study_id, label = comet_study_id)) + 
+#   geom_point() +
+#   geom_abline(slope = 0, intercept = 70, linetype = 3) +
+#   expand_limits(y = 0,x = 1) +
+#   labs(x = "Weeks", y = "Weekly Exercise Minutes", title = "Resistance Group - Weights - Fitbit") +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   geom_label() + 
+#   ylim(-30, 400) + 
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+# 
+# weight_yoga1 <- summary_activities_ex_log %>%
+#   filter(log_group == 4) 
+# 
+# weight_yoga <- summary_activities %>%
+#   filter(group == 4) %>%
+#   filter(activityParentName == "Yoga") %>%
+#   group_by(week, comet_study_id) %>%
+#   summarize(ex_min = sum(duration)) 
+# 
+# weight_yoga1 %>% ggplot(., aes(weeknum, log_st_min, color = data_group, label = comet_study_id)) +
+#   geom_point() +
+#   scale_colour_manual(values = c("#000000","#b20000")) +
+#   geom_abline(slope = 0, intercept = 75, linetype = 3) +
+#   expand_limits(y = 0,x = 1) +
+#   labs(x = "Weeks", y = "Weekly Exercise Minutes", title = "Resistance Group - Yoga - Exercise Log") +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   geom_label() +
+#   ylim(-30, 400) + 
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+# 
+# weight_yoga %>% ggplot(., aes(week,ex_min, color = comet_study_id, label = comet_study_id)) + 
+#   geom_point() +
+#   geom_abline(slope = 0, intercept = 75, linetype = 3) +
+#   expand_limits(y = 0,x = 1) +
+#   labs(x = "Weeks", y = "Weekly Exercise Minutes", title = "Resistance Group - Yoga - Fitbit") +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   geom_label() + 
+#   ylim(-30, 400) + 
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+# 
+# 
+# ##### Combo Group ######
+# combo_endurance1 <- summary_activities_ex_log %>%
+#   filter(log_group == 5) 
+# 
+# combo_endurance <- summary_activities %>%
+#   filter(group == 5) %>%
+#   filter(activityParentName == "Workout") %>%
+#   group_by(week, comet_study_id) %>%
+#   summarize(ex_min = sum(duration)) 
+# 
+# endurance_goal <- aerobic_goal %>%
+#   filter(week <= max(combo_endurance$week))
+# 
+# combo_weights <- summary_activities %>%
+#   filter(group == 5) %>%
+#   filter(activityParentName == "Weights") %>%
+#   group_by(week, comet_study_id) %>%
+#   summarize(ex_min = sum(duration)) 
+# 
+# combo_endurance1 %>% ggplot(., aes(weeknum, log_aex_min, color = data_group, label = comet_study_id)) +
+#   geom_point() +
+#   scale_colour_manual(values = c("#000000","#b20000")) +
+#   geom_line(data = endurance_goal, mapping = aes(x = week, y = goal), linetype = 3) +
+#   expand_limits(y = 0,x = 1) +
+#   labs(x = "Weeks", y = "Weekly Exercise Minutes", title = "Combo Group - Endurance - Exercise Log") +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   geom_label() +
+#   ylim(-30, 400) + 
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+# 
+# combo_endurance %>% ggplot(., aes(week,ex_min, color = comet_study_id, label = comet_study_id)) + 
+#   geom_point() +
+#   geom_line(data = endurance_goal, mapping = aes(x = week, y = goal), linetype = 3) +
+#   expand_limits(y = 0,x = 1) +
+#   labs(x = "Weeks", y = "Weekly Exercise Minutes", title = "Combo Group - Endurance - Fitbit") +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   geom_label() + 
+#   ylim(-30, 400) + 
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+# 
+# 
+# combo_endurance1 %>% ggplot(., aes(weeknum, log_rt_min, color = data_group, label = comet_study_id)) +
+#   geom_point() +
+#   scale_colour_manual(values = c("#000000","#b20000")) +
+#   geom_abline(slope = 0, intercept = 70, linetype = 3) +
+#   expand_limits(y = 0,x = 1) +
+#   labs(x = "Weeks", y = "Weekly Exercise Minutes", title = "Combo Group - Weights - Exercise Log") +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   geom_label() +
+#   ylim(-30, 400) + 
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+#   
+# combo_weights %>% ggplot(., aes(week,ex_min, color = comet_study_id, label = comet_study_id)) + 
+#   geom_point() +
+#   geom_abline(slope = 0, intercept = 70, linetype = 3) +
+#   expand_limits(y = 0,x = 1) +
+#   labs(x = "Weeks", y = "Weekly Exercise Minutes", title = "Combo Group - Weights - Fitbit") +
+#   theme(plot.title = element_text(hjust = 0.5)) +
+#   geom_label() + 
+#   ylim(-30, 400) + 
+#   theme_bw() +
+#   theme(plot.title = element_text(hjust = 0.5),
+#         axis.line = element_line(color='black'),
+#         axis.text.x = element_text(angle = 45, hjust = 1),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.grid.minor = element_blank(),
+#         legend.position = c(.9, .9),
+#         legend.title = element_blank())
+
+
+```
+
+```{r adherenc_perf, echo=FALSE, messages=FALSE, fig.width = 14, include=TRUE, warning=FALSE}
+to_join <- comet %>%
+  filter(!is.na(group) & redcap_event_name == "baseline_arm_1") %>%
+  select(comet_study_id, group, presentweeknum, intervention_status)
+
+summary_adherence_score <- time_based_adherence_temp %>%
+  left_join(., performance_based_adherence_temp, by = c("comet_study_id","week"))  %>%
+  select(-adherence_score_high, -adherence_score_performance) %>%
+  pivot_longer(cols = contains("adherence")) %>%
+  left_join(., to_join, by = "comet_study_id") %>%
+  filter(presentweeknum - week <= 7 & intervention_status == 1) %>%
+  filter(presentweeknum != week) %>%
+  mutate(name = case_when(is.na(value) & name == "adherence_score_performance" ~ "adherence_score_performance_missing",
+                          is.na(value) & name == "adherence_score_log" ~ "adherence_score_log_missing",
+                          T ~ name)) %>%
+  mutate(value = case_when(is.na(value) ~ -.25,
+                           T ~ value)) 
+  
+  
+
+##### Core and Fusion dataframe and plot #######
+
+cf_activities_ex_log <- summary_adherence_score %>%
+  filter(group == 2)
+
+cf_activities_ex_log %>% ggplot(., aes(week, value, color = name, label = comet_study_id)) +
+  geom_point() +
+  geom_label() +
+  scale_colour_manual(values = c("adherence_score_log" = "black" ,
+                                 "adherence_score_log_missing" = "#b20000"))  +
+  # scale_fill_manual(values = c("adherence_score_log" = "#00cc00" ,
+  #                                "adherence_score_performance" = "#56B4E9",
+  #                                "adherence_score_performance_missing" = "#b20000",
+  #                                "adherence_score_log_missing" = "#b20000"))  +
+  expand_limits(y = -.3,x = 0) +
+  labs(x = "Week", y = "Weekly Exercise Minutes", title = "Core and Fusion Group - Exercise Log") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylim(-.3, 2) + 
+  geom_abline(slope = 0, intercept = 1 , linetype = 3) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.9, .9),
+        legend.title = element_blank())
+
+##### Endurance dataframe and plot #######
+
+aer_activities_ex_log <- summary_adherence_score %>%
+  filter(group == 3)
+
+aer_activities_ex_log %>% ggplot(., aes(week, value, color = name, label = comet_study_id)) +
+  geom_point() +
+  geom_label() +
+  scale_colour_manual(values = c("adherence_score_log" = "black" ,
+                                 "adherence_score_log_missing" = "#b20000"))  +
+  # scale_fill_manual(values = c("adherence_score_log" = "#00cc00" ,
+  #                                "adherence_score_performance" = "#56B4E9",
+  #                                "adherence_score_performance_missing" = "#b20000",
+  #                                "adherence_score_log_missing" = "#b20000"))  +
+  expand_limits(y = -.3,x = 0) +
+  labs(x = "Week", y = "Weekly Exercise Minutes", title = "Endurance Group - Exercise Log") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylim(-.3, 2) + 
+  geom_abline(slope = 0, intercept = 1 , linetype = 3) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.9, .9),
+        legend.title = element_blank())
+
+##### Resistance dataframe and plot #######
+
+wt_activities_ex_log <- summary_adherence_score %>%
+  filter(group == 4)
+
+wt_activities_ex_log %>% ggplot(., aes(week, value, color = name, label = comet_study_id)) +
+  geom_point() +
+  geom_label() +
+  scale_colour_manual(values = c("adherence_score_log" = "black" ,
+                                 "adherence_score_log_missing" = "#b20000"))  +
+  # scale_fill_manual(values = c("adherence_score_log" = "#00cc00" ,
+  #                                "adherence_score_performance" = "#56B4E9",
+  #                                "adherence_score_performance_missing" = "#b20000",
+  #                                "adherence_score_log_missing" = "#b20000"))  +
+  expand_limits(y = -.3,x = 0) +
+  labs(x = "Week", y = "Weekly Exercise Minutes", title = "Resistance Group - Exercise Log") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylim(-.3, 2) + 
+  geom_abline(slope = 0, intercept = 1 , linetype = 3) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.9, .9),
+        legend.title = element_blank())
+
+##### Resistance dataframe and plot #######
+
+combo_activities_ex_log <- summary_adherence_score %>%
+  filter(group == 5)
+
+combo_activities_ex_log %>% ggplot(., aes(week, value, color = name, label = comet_study_id)) +
+  geom_point() +
+  geom_label() +
+  scale_colour_manual(values = c("adherence_score_log" = "black" ,
+                                 "adherence_score_log_missing" = "#b20000"))  +
+  # scale_fill_manual(values = c("adherence_score_log" = "#00cc00" ,
+  #                                "adherence_score_performance" = "#56B4E9",
+  #                                "adherence_score_performance_missing" = "#b20000",
+  #                                "adherence_score_log_missing" = "#b20000"))  +
+  expand_limits(y = -.3,x = 0) +
+  labs(x = "Week", y = "Weekly Exercise Minutes", title = "Combo Group - Exercise Log") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylim(-.3, 2) + 
+  geom_abline(slope = 0, intercept = 1 , linetype = 3) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = c(.9, .9),
+        legend.title = element_blank())
+
+
+
+
+```
+
+
+</center>
+
+### Exercise Log Issues
+
+Please fix in the exercise log database.For a full list with details see the 'exercise_log_issues.csv' file in the reports folder.
+<center>
+```{r exercise_log_monday, echo=FALSE}
+
+
+gtsummary::tbl_summary(ex_log_issues %>% select(issue))
+
+export(ex_log_issues, file = file.path(report_dir,'exercise_log_issues.csv'))
+
+
+
+```
+</center><br>
+
+
+### Ongoing Adverse Events and EOIs
+
+
+<center>
+```{r aes, echo=FALSE, message=FALSE}
+
+
+###### import ctcae categories and terms #######
+ctcae_categories <- import(file.path(data_dir,'dsmc_report','CTCAE_v5.0_categories.xlsx'))
+ctcae_terms <- import(file.path(data_dir,'dsmc_report','CTCAE_v5.0_terms.xlsx'))
+
+
+ongoing_aes <- adverse_event %>%
+  filter(redcap_repeat_instrument == "adverse_event") %>%
+  filter(adverse_event_complete != 2)  %>%
+  left_join(., comet_baseline, by = "record_id") %>%
+  mutate(Outcome = case_when(ae_outcome == 1 ~ "Recovered, without treatment",
+                             ae_outcome == 2 ~ "Recovered, with treatment",
+                             ae_outcome == 3 ~ "Still Present, no treatment",
+                             ae_outcome == 4 ~ "Still Present, being treated",
+                             ae_outcome == 5 ~ "Residual effect(s) present - no treatment",
+                             ae_outcome == 6 ~ "Residual effect(s) present- being treated",
+                             ae_outcome == 7 ~ "Subject died")) %>%
+  left_join(., ctcae_terms, by = c("ae_ctcae_term" = "ctcae_term_identifier")) %>%
+  rename("Study ID" = comet_study_id, "Weeks on Intervention" = presentweeknum, "Preferred Term" = ctcae_term) %>%
+  select("Study ID", "Weeks on Intervention", "Preferred Term", Outcome, ae_date_of_onset, ae_pi_sign_line, ae_progress_note) 
+
+if(nrow(ongoing_aes)>0)
+{
+  ongoing_aes %>%
+    addHtmlTableStyle(align = "c,c,l",
+                      col.rgroup = c("none", "#F7F7F7"),
+                      css.cell = "height: 10px; padding: 4px",
+                      css.header = "padding: 4px"
+    ) %>% 
+    htmlTable(., 
+              rnames = F,
+    )
+} else {
+  cat(paste0("Nothing missing weeks"))
+}
+
+
+```
+</center><br>
+
+**Wear Time **
+
+Daily average number of hours each participant has been wearing their watch over the last two weeks. 
+<center>
+```{r wear_time, echo=FALSE}
+
+
+last_wear <- hr_all_df %>%
+  group_by(comet_study_id) %>%
+  summarize(last_sync = max(date)) %>%
+  filter(comet_study_id != 0) 
+  
+wear_time <- hr_all_df %>%
+  filter(date >= today() -14) %>%
+  mutate(hours_worn = round(minutes_worn/60, digits =1)) %>%
+  group_by(comet_study_id) %>%
+  summarize("Average hours worn per day last week"  = round(mean(hours_worn, na.rm = T))) 
+
+all_wear_active <- comet_coordinator_markdown %>%
+  filter(is.na(comet_study_id) == F) %>%
+  filter(redcap_event_name == "baseline_arm_1") %>%
+  filter(status___6 == 0 | status___7 == 0 | status___8 == 0 | status___9 == 0) %>%
+  filter(!is.na(group)) %>%
+  left_join(., wear_time, by = c("comet_study_id" = "comet_study_id")) %>%
+  left_join(., last_wear, by = "comet_study_id") %>%
+  select(comet_study_id, comet_interventionstart, presentweeknum, Status, `Average hours worn per day last week`, last_sync) %>%
+  arrange(desc(presentweeknum))
+
+  if(nrow(all_wear_active)>0)
+  {
+    all_wear_active %>%
+      addHtmlTableStyle(align = "c",
+                        col.rgroup = c("none", "#F7F7F7"),
+                        css.cell = "height: 10px; padding: 4px",
+                        css.header = "padding: 4px"
+      ) %>% 
+      htmlTable(., 
+                rnames = F,
+      )
+  } else {
+    cat(paste0("Nothing in table"))
+  }
+
+
+
+```
+</center><br>

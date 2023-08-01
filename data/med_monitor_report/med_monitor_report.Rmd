@@ -1,0 +1,87 @@
+---
+output:
+  pdf_document: default
+sansfont: Helvet
+html_document: default
+
+fontsize: 11pt
+urlcolor: blue
+geometry: margin=1.5cm
+header-includes:
+    \usepackage{helvet}
+    \renewcommand{\familydefault}{\sfdefault}
+    \usepackage{float}
+---
+
+```{r setup, include=FALSE}
+library(gt)
+library(knitr)
+library(dplyr)
+
+###### Build Root Server #####  
+if(Sys.info()["nodename"]=="workstation_1" & Sys.info()["user"]=="study_coordinator_2") {
+  root_p <- file.path("drive")
+  root_server_dir <- file.path(root_p,"study_dir_a")
+  python_cmd_prefix <- "py "
+} else if(Sys.info()["nodename"]=="workstation_3" & Sys.info()["user"]=="root"){
+  root_p <- ""
+  # root_server_dir <- file.path(root_p,"ADC_Data")
+  root_server_dir <- file.path(root_p,"COMET")
+  python_cmd_prefix <- "python "
+}
+
+###### Load Directories #####
+load(file.path(root_server_dir,'study_dir_a','COMET','data','clean','directories.Rdata'))
+
+##### Load Current Med Monitor ####
+load(file.path(data_dir,'med_monitor_report','current.Rdata'))
+
+
+```
+
+
+```{r logo, echo = FALSE,  fig.show = "hold", out.width = "10%", fig.align = "center"}
+    knitr::include_graphics(file.path(data_dir,'med_monitor_report','COMETLogo.jpg'))
+  
+```
+\vspace{-5truemm}
+
+#### Medical Monitor Cognitive Adjudication for the COMET Study
+Please review the following information collected during screening. If you suspect cognitive impairment, email Eric Vidoni at [user2@kumc.edu](mailto:user2@kumc.edu). Otherwise, please sign the form via DocuSign. By signing, you confirm that cognitive impairment is __*NOT*__ suspected.<br>
+\vspace{-5truemm}
+
+##### Demographics:
+\vspace{-5truemm}
+```{r demo_table, echo = FALSE, echo=FALSE, message=FALSE}
+
+kable(demo_table)
+
+
+```
+
+\vspace{-5truemm}
+\begin{footnotesize}ADI: Percentile rank of neighborhood socioeconomic disadvantage, 100 indicates highest disadvantage.
+CIRS: CIRS Comorbidity Score, Range 0-56 with higher values indicating greater comorbid burden.\end{footnotesize}
+\vspace{-5truemm}
+
+##### Medications:
+`r paste(meds_tmp$med, collapse = "; ") `
+
+\vspace{-5truemm}
+##### Cognitive Test Scores
+
+```{r cog_table, echo = FALSE, echo=FALSE, message=FALSE}
+
+kable(cog_table, format = "simple") 
+  
+
+```
+
+\vspace{-5truemm}
+##### Specific Medical Condition
+`r question`
+\vspace{-1truemm}
+
+<p>Sign via DocuSign or sign and date to <br>  
+confirm that  __*NO*__ cognitive impairment is suspected.   ______________________________________________</p>
+\begin{flushright}Affix Signature and Date Here\end{flushright}

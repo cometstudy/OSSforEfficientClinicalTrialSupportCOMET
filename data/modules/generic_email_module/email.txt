@@ -1,0 +1,1 @@
+It appears as though we were unable to return a battery level Participant ID #145s fitbit. This is likely because the participant is in baseline testing and has not had their Fitbit set up yet. If so, please mark "Stop Fitbit Reminder Texts" in Status Summary until the Fitbit is setup.
