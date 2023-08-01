@@ -247,11 +247,10 @@ if(execution == 1) {
   successful_execution <- 1
   source(file.path(script_dir, '00_encrypt_fitbit.R'))
   
-  #clear workspace if running on server
-  if(Sys.info()["nodename"]!="workstation_1"){
-    rm(list = ls())
-  }
 }
 
-
+#clear workspace if running on server
+if(Sys.info()["nodename"]!="workstation_1"){
+  rm(list = ls())
+}
 
