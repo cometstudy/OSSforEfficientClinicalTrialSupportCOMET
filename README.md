@@ -4,6 +4,8 @@
     <img width="%" src="COMETLogo.jpg">
 </p>
 
+Please contact Eric Vidoni evidoni@kumc.edu for updated code.
+
 The Combined Exercise Trial (COMET, NCT04848038) is a randomized, controlled trial for 280 healthy, underactive adults between 65 and 80 to evaluate the impact of three different exercise modalities on cognitive health. The trial required a data management system to support varied data constraints and to improve efficiency and communication for stakeholders. This system was designed by two hobbiest programmers to suit the needs of the study. For full details, read the paper here.
 
 
